@@ -53,4 +53,23 @@ describe('parseCsv', () => {
     const buffer = csv(['foo;bar', 'a;b']);
     expect(() => parseCsv(buffer)).toThrow(/Colonnes non reconnues/);
   });
+
+  it('recognizes a real French bank export with multiple date/label columns', () => {
+    // Format Société Générale-like : plusieurs colonnes "date" et "libellé",
+    // débit/crédit séparés au lieu d'un montant signé unique.
+    const buffer = csv([
+      'Date de comptabilisation;Libelle simplifie;Libelle operation;Reference;Informations complementaires;Type operation;Categorie;Sous categorie;Debit;Credit;Date operation;Date de valeur;Pointage operation',
+      '04/08/2026;CARREFOUR MARKET;CB CARREFOUR MARKET CARTE 1234;REF001;;CARTE;;;45,67;;03/08/2026;03/08/2026;',
+      '02/08/2026;VIREMENT SALAIRE;VIR VIREMENT SALAIRE ENTREPRISE XYZ;REF002;;VIREMENT;;;;1500,00;01/08/2026;01/08/2026;',
+    ]);
+
+    const result = parseCsv(buffer);
+
+    expect(result.failedRows).toBe(0);
+    // "Date operation" doit être préférée à "Date de comptabilisation"/"Date de valeur".
+    expect(result.rows[0].date).toBe('2026-08-03');
+    expect(result.rows[0].label).toBe('CARREFOUR MARKET');
+    expect(result.rows[0].amount).toBe(-45.67);
+    expect(result.rows[1].amount).toBe(1500);
+  });
 });
