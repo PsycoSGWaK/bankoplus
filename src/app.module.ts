@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { AccountsModule } from './accounts/accounts.module';
 import { ImportModule } from './import/import.module';
 import { TransactionsModule } from './transactions/transactions.module';
+import { BudgetsModule } from './budgets/budgets.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -31,6 +32,7 @@ import { AppController } from './app.controller';
     AccountsModule,
     TransactionsModule,
     ImportModule,
+    BudgetsModule,
   ],
   controllers: [AppController],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
