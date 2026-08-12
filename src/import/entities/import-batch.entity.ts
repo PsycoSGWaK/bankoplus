@@ -36,6 +36,12 @@ export class ImportBatch {
   @Column({ type: 'int' })
   failedRows!: number;
 
+  // Lignes reconnues comme déjà importées (même référence bancaire, ou même
+  // date+libellé+montant en l'absence de référence) — ni une erreur ni une
+  // nouvelle transaction, juste ignorées silencieusement.
+  @Column({ type: 'int', default: 0 })
+  duplicateRows!: number;
+
   @CreateDateColumn()
   createdAt!: Date;
 }

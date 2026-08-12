@@ -14,6 +14,9 @@ coverage/
 *.log
 npm-debug.log*
 
+# exports locaux (peuvent contenir de vraies données financières)
+exports/
+
 # OS
 .DS_Store
 Thumbs.db
