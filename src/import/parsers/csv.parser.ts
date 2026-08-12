@@ -27,6 +27,9 @@ const LABEL_PATTERNS: string[][] = [
 const AMOUNT_PATTERNS: string[][] = [['montant'], ['amount']];
 const DEBIT_PATTERNS: string[][] = [['debit']];
 const CREDIT_PATTERNS: string[][] = [['credit']];
+// Optionnelle — sert uniquement à la déduplication (voir ImportService),
+// aucune erreur si absente.
+const REFERENCE_PATTERNS: string[][] = [['reference'], ['ref']];
 
 function normalizeHeader(header: string): string {
   return header
@@ -73,6 +76,7 @@ export function parseCsv(buffer: Buffer): ParseResult {
   const amountCol = findColumn(headers, AMOUNT_PATTERNS);
   const debitCol = findColumn(headers, DEBIT_PATTERNS);
   const creditCol = findColumn(headers, CREDIT_PATTERNS);
+  const referenceCol = findColumn(headers, REFERENCE_PATTERNS);
 
   if (dateCol === -1 || labelCol === -1 || (amountCol === -1 && debitCol === -1 && creditCol === -1)) {
     throw new Error(
@@ -102,7 +106,8 @@ export function parseCsv(buffer: Buffer): ParseResult {
       continue;
     }
 
-    rows.push({ date, label, amount });
+    const externalRef = referenceCol !== -1 ? (record[referenceCol] ?? '').trim() || undefined : undefined;
+    rows.push({ date, label, amount, externalRef });
   }
 
   return { rows, totalRows: dataRows.length, failedRows };

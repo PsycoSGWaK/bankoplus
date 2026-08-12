@@ -90,6 +90,37 @@ describe('Import + Catégorisation automatique (e2e)', () => {
       .expect(403);
   });
 
+  it('does not duplicate transactions when the same file is re-imported', async () => {
+    const csv = [
+      'Date de comptabilisation;Libelle simplifie;Reference;Debit;Credit;Date operation',
+      '04/08/2026;CB CARREFOUR MARKET;REF-DEDUP-1;45,67;;03/08/2026',
+      '02/08/2026;VIREMENT SALAIRE;REF-DEDUP-2;;1500,00;01/08/2026',
+    ].join('\n');
+
+    const first = await request(app.getHttpServer())
+      .post('/api/import')
+      .set(auth())
+      .field('accountId', accountId)
+      .attach('file', Buffer.from(csv, 'utf8'), 'releve-dedup.csv')
+      .expect(201);
+    expect(first.body).toMatchObject({ importedRows: 2, duplicateRows: 0 });
+
+    const second = await request(app.getHttpServer())
+      .post('/api/import')
+      .set(auth())
+      .field('accountId', accountId)
+      .attach('file', Buffer.from(csv, 'utf8'), 'releve-dedup.csv')
+      .expect(201);
+    expect(second.body).toMatchObject({ importedRows: 0, duplicateRows: 2 });
+
+    const transactions = await request(app.getHttpServer())
+      .get(`/api/transactions?accountId=${accountId}`)
+      .set(auth())
+      .expect(200);
+    const matching = transactions.body.filter((t: any) => t.label === 'CB CARREFOUR MARKET');
+    expect(matching).toHaveLength(1);
+  });
+
   it('lets the owner manually correct an auto-assigned category', async () => {
     const transactions = await request(app.getHttpServer())
       .get(`/api/transactions?accountId=${accountId}`)

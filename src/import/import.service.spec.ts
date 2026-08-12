@@ -17,7 +17,7 @@ describe('ImportService', () => {
   let antivirus: { assertClean: jest.Mock };
   let parsing: { parse: jest.Mock };
   let categorization: { suggest: jest.Mock };
-  let manager: { create: jest.Mock; save: jest.Mock };
+  let manager: { create: jest.Mock; save: jest.Mock; find: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
   beforeEach(async () => {
@@ -28,6 +28,9 @@ describe('ImportService', () => {
     manager = {
       create: jest.fn((_entity, data) => data),
       save: jest.fn((data) => Promise.resolve(Array.isArray(data) ? data : { ...data, id: 'batch-1' })),
+      // Par défaut : aucune transaction existante en base pour ce compte
+      // (ni référence connue, ni empreinte connue) — pas de doublon détecté.
+      find: jest.fn().mockResolvedValue([]),
     };
     dataSource = { transaction: jest.fn((cb) => cb(manager)) };
 
@@ -112,5 +115,69 @@ describe('ImportService', () => {
 
     expect(categorization.suggest).toHaveBeenCalledWith('u1', 'CARREFOUR', -10);
     expect(categorization.suggest).toHaveBeenCalledWith('u1', 'VIREMENT SALAIRE', 1500);
+  });
+
+  describe('déduplication', () => {
+    it('skips a row whose bank reference already exists for this account', async () => {
+      parsing.parse.mockResolvedValueOnce({
+        rows: [{ date: '2026-08-03', label: 'CARREFOUR', amount: -10, externalRef: 'REF-42' }],
+        totalRows: 1,
+        failedRows: 0,
+      });
+      manager.find
+        .mockResolvedValueOnce([{ externalRef: 'REF-42' }]) // refs déjà connues
+        .mockResolvedValueOnce([]); // empreintes déjà connues
+
+      const batch = await service.importFile('u1', 'acc-1', fileOf('releve.csv'));
+
+      expect(batch.importedRows).toBe(0);
+      expect(batch.duplicateRows).toBe(1);
+      expect(categorization.suggest).not.toHaveBeenCalled();
+    });
+
+    it('falls back to date+label+amount when a row has no bank reference', async () => {
+      parsing.parse.mockResolvedValueOnce({
+        rows: [{ date: '2026-08-03', label: 'CARREFOUR MARKET', amount: -45.67 }],
+        totalRows: 1,
+        failedRows: 0,
+      });
+      manager.find
+        .mockResolvedValueOnce([]) // pas de référence connue
+        .mockResolvedValueOnce([{ date: '2026-08-03', label: 'CARREFOUR MARKET', amount: -45.67 }]);
+
+      const batch = await service.importFile('u1', 'acc-1', fileOf('releve.csv'));
+
+      expect(batch.importedRows).toBe(0);
+      expect(batch.duplicateRows).toBe(1);
+    });
+
+    it('imports a row normally when nothing matches an existing transaction', async () => {
+      parsing.parse.mockResolvedValueOnce({
+        rows: [{ date: '2026-08-03', label: 'NOUVELLE DEPENSE', amount: -12 }],
+        totalRows: 1,
+        failedRows: 0,
+      });
+
+      const batch = await service.importFile('u1', 'acc-1', fileOf('releve.csv'));
+
+      expect(batch.importedRows).toBe(1);
+      expect(batch.duplicateRows).toBe(0);
+    });
+
+    it('does not import the same row twice if it is repeated within the same file', async () => {
+      parsing.parse.mockResolvedValueOnce({
+        rows: [
+          { date: '2026-08-03', label: 'CARREFOUR', amount: -10, externalRef: 'REF-1' },
+          { date: '2026-08-03', label: 'CARREFOUR', amount: -10, externalRef: 'REF-1' },
+        ],
+        totalRows: 2,
+        failedRows: 0,
+      });
+
+      const batch = await service.importFile('u1', 'acc-1', fileOf('releve.csv'));
+
+      expect(batch.importedRows).toBe(1);
+      expect(batch.duplicateRows).toBe(1);
+    });
   });
 });

@@ -42,6 +42,15 @@ export class Transaction {
   @Column({ type: 'varchar', length: 36, nullable: true })
   importBatchId!: string | null;
 
+  // Référence bancaire unique de la transaction (colonne "Reference" des
+  // exports CSV qui en fournissent une) — utilisée pour détecter les
+  // doublons lors d'une réimportation qui chevaucherait un import
+  // précédent. null si le format source n'a pas de référence exploitable
+  // (repli sur date+libellé+montant dans ce cas, voir ImportService).
+  @Index()
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  externalRef!: string | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 }
