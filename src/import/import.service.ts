@@ -5,6 +5,7 @@ import { AntivirusService } from './services/antivirus.service';
 import { ParsingService } from './services/parsing.service';
 import { ImportBatch, ImportBatchStatus, ImportSourceType } from './entities/import-batch.entity';
 import { Transaction } from '../transactions/entities/transaction.entity';
+import { CategorizationService } from '../transactions/categorization.service';
 
 const EXTENSION_TO_SOURCE: Record<string, ImportSourceType> = { csv: 'csv', pdf: 'pdf' };
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
@@ -21,6 +22,7 @@ export class ImportService {
     private readonly accounts: AccountsService,
     private readonly antivirus: AntivirusService,
     private readonly parsing: ParsingService,
+    private readonly categorization: CategorizationService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -54,15 +56,18 @@ export class ImportService {
       );
 
       if (result.rows.length > 0) {
-        const transactions = result.rows.map((row) =>
-          manager.create(Transaction, {
-            userId,
-            accountId,
-            date: row.date,
-            label: row.label,
-            amount: row.amount,
-            importBatchId: batch.id,
-          }),
+        const transactions = await Promise.all(
+          result.rows.map(async (row) =>
+            manager.create(Transaction, {
+              userId,
+              accountId,
+              date: row.date,
+              label: row.label,
+              amount: row.amount,
+              importBatchId: batch.id,
+              categoryId: await this.categorization.suggest(userId, row.label, row.amount),
+            }),
+          ),
         );
         await manager.save(transactions);
       }

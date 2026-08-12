@@ -6,6 +6,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { AuthModule } from './auth/auth.module';
 import { AccountsModule } from './accounts/accounts.module';
 import { ImportModule } from './import/import.module';
+import { TransactionsModule } from './transactions/transactions.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -28,6 +29,7 @@ import { AppController } from './app.controller';
     }),
     AuthModule,
     AccountsModule,
+    TransactionsModule,
     ImportModule,
   ],
   controllers: [AppController],
