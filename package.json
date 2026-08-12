@@ -12,7 +12,12 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js -d src/data-source.ts",
+    "migration:generate": "npm run typeorm -- migration:generate",
+    "migration:create": "typeorm-ts-node-commonjs migration:create",
+    "migration:run": "npm run typeorm -- migration:run",
+    "migration:revert": "npm run typeorm -- migration:revert"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -29,6 +34,7 @@
     "class-validator": "^0.14.1",
     "cookie-parser": "^1.4.7",
     "csv-parse": "^7.0.2",
+    "dotenv": "^17.4.2",
     "helmet": "^8.0.0",
     "multer": "^2.2.0",
     "mysql2": "^3.11.5",
