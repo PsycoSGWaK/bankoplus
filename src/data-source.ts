@@ -1,10 +1,15 @@
-import 'dotenv/config';
+import * as dotenv from 'dotenv';
 import { DataSource } from 'typeorm';
 
 // Utilisé exclusivement par le CLI TypeORM (génération/exécution des
 // migrations) — l'application elle-même se connecte via TypeOrmModule dans
 // app.module.ts. Les deux doivent rester cohérents (mêmes entités, même
 // connexion), mais celui-ci ne doit jamais activer `synchronize`.
+//
+// NODE_ENV=test (ex. `npm run migration:run:test`) pointe vers .env.test et
+// donc vers la base de test dédiée — jamais la base de dev par accident.
+dotenv.config({ path: process.env.NODE_ENV === 'test' ? '.env.test' : '.env' });
+
 export const AppDataSource = new DataSource({
   type: 'mysql',
   host: process.env.DB_HOST,

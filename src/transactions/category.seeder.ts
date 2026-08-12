@@ -37,6 +37,8 @@ const DEFAULT_INCOME_CATEGORIES: DefaultCategory[] = [
 export const FALLBACK_EXPENSE_CATEGORY = 'Non catégorisé (dépense)';
 export const FALLBACK_INCOME_CATEGORY = 'Non catégorisé (revenu)';
 
+const SEED_LOCK_NAME = 'bankoplus_category_seed';
+
 @Injectable()
 export class CategorySeeder implements OnModuleInit {
   private readonly logger = new Logger(CategorySeeder.name);
@@ -47,11 +49,28 @@ export class CategorySeeder implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    const existingDefaults = await this.categories.count({ where: { userId: IsNull() } });
-    if (existingDefaults > 0) {
-      return;
+    if (!(await this.hasDefaults())) {
+      // Verrou nommé MySQL : plusieurs instances de l'app peuvent démarrer en
+      // même temps (redémarrage, plusieurs process de test en parallèle...).
+      // Sans lui, deux process peuvent tous les deux voir "aucune catégorie"
+      // et semer chacun leur propre jeu de catégories en double.
+      await this.categories.manager.query('SELECT GET_LOCK(?, 10)', [SEED_LOCK_NAME]);
+      try {
+        if (!(await this.hasDefaults())) {
+          await this.seed();
+        }
+      } finally {
+        await this.categories.manager.query('SELECT RELEASE_LOCK(?)', [SEED_LOCK_NAME]);
+      }
     }
+  }
 
+  private async hasDefaults(): Promise<boolean> {
+    const existingDefaults = await this.categories.count({ where: { userId: IsNull() } });
+    return existingDefaults > 0;
+  }
+
+  private async seed(): Promise<void> {
     this.logger.log('Seed des catégories par défaut...');
     for (const def of [...DEFAULT_EXPENSE_CATEGORIES, ...DEFAULT_INCOME_CATEGORIES]) {
       const category = await this.categories.save(

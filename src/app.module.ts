@@ -21,7 +21,13 @@ const isTestEnv = process.env.NODE_ENV === 'test';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      // Les tests (unitaires comme e2e) tournent sous NODE_ENV=test
+      // (positionné automatiquement par Jest) et se connectent à une base
+      // dédiée (bankoplus_test), jamais à la base de dev.
+      envFilePath: isTestEnv ? '.env.test' : '.env',
+    }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
