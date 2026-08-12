@@ -24,8 +24,10 @@ import { AppController } from './app.controller';
         password: config.get<string>('DB_PASSWORD'),
         database: config.get<string>('DB_DATABASE'),
         autoLoadEntities: true,
-        // Migrations, pas de synchronize automatique en dehors du dev local.
-        synchronize: config.get<string>('NODE_ENV') === 'development',
+        // Jamais de synchronize, même en dev — le schéma n'évolue que par
+        // migration explicite (`npm run migration:run`), pas automatiquement
+        // au démarrage. Voir src/data-source.ts et src/migrations/.
+        synchronize: false,
       }),
     }),
     AuthModule,
