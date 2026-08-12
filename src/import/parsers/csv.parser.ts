@@ -4,11 +4,29 @@ import { parse } from 'csv-parse/sync';
 import { parseAmount, parseDate } from './amount.util';
 import { ParseResult } from './parsed-row.interface';
 
-const DATE_HEADERS = ['date', 'dateoperation', 'dateop', 'dateval'];
-const LABEL_HEADERS = ['libelle', 'label', 'description', 'intitule', 'libell'];
-const AMOUNT_HEADERS = ['montant', 'amount'];
-const DEBIT_HEADERS = ['debit'];
-const CREDIT_HEADERS = ['credit'];
+// Chaque motif est une liste de sous-chaînes qui doivent TOUTES apparaître
+// dans l'en-tête normalisé pour matcher. Les motifs sont essayés dans
+// l'ordre — le premier qui trouve une colonne l'emporte. Nécessaire car les
+// vrais exports bancaires ont souvent plusieurs colonnes "date" ou "libellé"
+// (ex. Société Générale : "Date de comptabilisation", "Date operation",
+// "Date de valeur", "Libelle simplifie", "Libelle operation"...).
+const DATE_PATTERNS: string[][] = [
+  ['date', 'operation'],
+  ['date', 'valeur'],
+  ['date', 'comptabilisation'],
+  ['date'],
+];
+const LABEL_PATTERNS: string[][] = [
+  ['libelle', 'simplifie'],
+  ['libelle', 'operation'],
+  ['libelle'],
+  ['label'],
+  ['description'],
+  ['intitule'],
+];
+const AMOUNT_PATTERNS: string[][] = [['montant'], ['amount']];
+const DEBIT_PATTERNS: string[][] = [['debit']];
+const CREDIT_PATTERNS: string[][] = [['credit']];
 
 function normalizeHeader(header: string): string {
   return header
@@ -18,8 +36,12 @@ function normalizeHeader(header: string): string {
     .replace(/[^a-z]/g, '');
 }
 
-function findColumn(headers: string[], candidates: string[]): number {
-  return headers.findIndex((h) => candidates.includes(h));
+function findColumn(headers: string[], patterns: string[][]): number {
+  for (const pattern of patterns) {
+    const index = headers.findIndex((h) => pattern.every((keyword) => h.includes(keyword)));
+    if (index !== -1) return index;
+  }
+  return -1;
 }
 
 /**
@@ -46,11 +68,11 @@ export function parseCsv(buffer: Buffer): ParseResult {
   }
 
   const headers = records[0].map(normalizeHeader);
-  const dateCol = findColumn(headers, DATE_HEADERS);
-  const labelCol = findColumn(headers, LABEL_HEADERS);
-  const amountCol = findColumn(headers, AMOUNT_HEADERS);
-  const debitCol = findColumn(headers, DEBIT_HEADERS);
-  const creditCol = findColumn(headers, CREDIT_HEADERS);
+  const dateCol = findColumn(headers, DATE_PATTERNS);
+  const labelCol = findColumn(headers, LABEL_PATTERNS);
+  const amountCol = findColumn(headers, AMOUNT_PATTERNS);
+  const debitCol = findColumn(headers, DEBIT_PATTERNS);
+  const creditCol = findColumn(headers, CREDIT_PATTERNS);
 
   if (dateCol === -1 || labelCol === -1 || (amountCol === -1 && debitCol === -1 && creditCol === -1)) {
     throw new Error(
