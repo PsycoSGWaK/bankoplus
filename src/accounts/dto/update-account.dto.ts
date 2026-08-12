@@ -2,10 +2,11 @@ import { IsIn, IsNumber, IsOptional, IsString, Matches, MaxLength } from 'class-
 
 const SUPPORTED_CURRENCIES = ['EUR'];
 
-export class CreateAccountDto {
+export class UpdateAccountDto {
+  @IsOptional()
   @IsString()
   @MaxLength(100)
-  label!: string;
+  label?: string;
 
   @IsOptional()
   @IsString()
@@ -16,8 +17,6 @@ export class CreateAccountDto {
   @IsIn(SUPPORTED_CURRENCIES)
   currency?: string;
 
-  // Solde connu à referenceDate — les deux doivent être fournis ensemble ou
-  // absents ensemble (vérifié dans le service).
   @IsOptional()
   @IsNumber()
   referenceBalance?: number;
