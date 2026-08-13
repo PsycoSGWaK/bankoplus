@@ -6,8 +6,12 @@ import { Transaction } from '../transactions/entities/transaction.entity';
 import { CategorizationService } from '../transactions/categorization.service';
 import { UpsertBudgetDto } from './dto/upsert-budget.dto';
 import { SimulatePurchaseDto } from './dto/simulate-purchase.dto';
-import { resolveMonthRange } from './utils/month-range.util';
-import { projectMonthEnd } from './utils/projection.util';
+import { MonthRange, resolveMonthRange } from './utils/month-range.util';
+import { projectCategorySpend, projectMonthEnd } from './utils/projection.util';
+import { detectRecurringCategories, shiftMonth } from './utils/recurrence.util';
+
+const UNCATEGORIZED_KEY = 'UNCATEGORIZED';
+const RECURRENCE_MONTHS_BACK = 3;
 
 export interface BudgetProgress {
   id: string;
@@ -71,15 +75,21 @@ export class BudgetsService {
 
   async list(userId: string, month?: string): Promise<BudgetProgress[]> {
     const range = resolveMonthRange(month);
-    const [budgets, spentByCategory] = await Promise.all([
+    const [budgets, spentByCategory, projection] = await Promise.all([
       this.budgets.find({ where: { userId } }),
       this.sumExpensesByCategory(userId, range.start, range.end),
+      this.projectExpensesByCategory(userId, range),
     ]);
 
     return budgets.map((budget) => {
       const key = budget.categoryId ?? 'GLOBAL';
       const spent = spentByCategory.get(key) ?? 0;
-      const projectedMonthEnd = projectMonthEnd(spent, range.daysElapsed, range.daysInMonth);
+      // Un budget global suit la projection agrégée (somme des projections
+      // par catégorie) ; un budget de catégorie suit sa propre projection,
+      // qui tient compte de sa récurrence éventuelle.
+      const projectedMonthEnd = budget.categoryId
+        ? (projection.perCategory.get(budget.categoryId) ?? 0)
+        : projection.total;
 
       return {
         id: budget.id,
@@ -98,12 +108,13 @@ export class BudgetsService {
   async overview(userId: string, month?: string): Promise<MonthOverview> {
     const range = resolveMonthRange(month);
 
-    const [{ total: totalIncome }, { total: totalExpensesRaw }] = await Promise.all([
+    const [{ total: totalIncome }, { total: totalExpensesRaw }, projection] = await Promise.all([
       this.sumWhere(userId, range.start, range.end, '>'),
       this.sumWhere(userId, range.start, range.end, '<'),
+      this.projectExpensesByCategory(userId, range),
     ]);
     const totalExpenses = Math.abs(totalExpensesRaw);
-    const projectedExpensesMonthEnd = projectMonthEnd(totalExpenses, range.daysElapsed, range.daysInMonth);
+    const projectedExpensesMonthEnd = projection.total;
 
     return {
       month: `${range.year}-${String(range.month).padStart(2, '0')}`,
@@ -121,16 +132,26 @@ export class BudgetsService {
     const range = resolveMonthRange();
     const key = dto.categoryId ?? 'GLOBAL';
 
-    const [spentByCategory, budget] = await Promise.all([
+    const [spentByCategory, budget, recurringAverages] = await Promise.all([
       this.sumExpensesByCategory(userId, range.start, range.end),
       dto.categoryId
         ? this.budgets.findOne({ where: { userId, categoryId: dto.categoryId } })
         : this.budgets.findOne({ where: { userId, categoryId: IsNull() } }),
+      this.recurringAveragesByCategory(userId, range),
     ]);
 
     const spentBefore = spentByCategory.get(key) ?? 0;
     const spentAfter = spentBefore + dto.amount;
-    const projectedMonthEndAfter = projectMonthEnd(spentAfter, range.daysElapsed, range.daysInMonth);
+    // Une simulation sur le budget global n'a pas de moyenne récurrente
+    // propre (c'est une agrégation, pas une catégorie) : elle reste
+    // extrapolée linéairement, comme avant.
+    const recurringAverage = dto.categoryId ? recurringAverages.get(dto.categoryId) : undefined;
+    const projectedMonthEndAfter = projectCategorySpend(
+      spentAfter,
+      range.daysElapsed,
+      range.daysInMonth,
+      recurringAverage,
+    );
 
     return {
       categoryId: dto.categoryId ?? null,
@@ -150,15 +171,7 @@ export class BudgetsService {
     start: string,
     end: string,
   ): Promise<Map<string, number>> {
-    const rows = await this.transactions
-      .createQueryBuilder('t')
-      .select('t.categoryId', 'categoryId')
-      .addSelect('SUM(t.amount)', 'total')
-      .where('t.userId = :userId', { userId })
-      .andWhere('t.date BETWEEN :start AND :end', { start, end })
-      .andWhere('t.amount < 0')
-      .groupBy('t.categoryId')
-      .getRawMany<{ categoryId: string | null; total: string }>();
+    const rows = await this.expenseRowsByCategory(userId, start, end);
 
     const map = new Map<string, number>();
     for (const row of rows) {
@@ -168,6 +181,93 @@ export class BudgetsService {
     const globalTotal = rows.reduce((sum, row) => sum + Math.abs(parseFloat(row.total)), 0);
     map.set('GLOBAL', globalTotal);
     return map;
+  }
+
+  /** Comme sumExpensesByCategory, mais sans la clé agrégée 'GLOBAL' — pour raisonner catégorie par catégorie. */
+  private async sumExpensesByActualCategory(userId: string, start: string, end: string): Promise<Map<string, number>> {
+    const rows = await this.expenseRowsByCategory(userId, start, end);
+    const map = new Map<string, number>();
+    for (const row of rows) {
+      map.set(row.categoryId ?? UNCATEGORIZED_KEY, Math.abs(parseFloat(row.total)));
+    }
+    return map;
+  }
+
+  private async expenseRowsByCategory(
+    userId: string,
+    start: string,
+    end: string,
+  ): Promise<{ categoryId: string | null; total: string }[]> {
+    return this.transactions
+      .createQueryBuilder('t')
+      .select('t.categoryId', 'categoryId')
+      .addSelect('SUM(t.amount)', 'total')
+      .where('t.userId = :userId', { userId })
+      .andWhere('t.date BETWEEN :start AND :end', { start, end })
+      .andWhere('t.amount < 0')
+      .groupBy('t.categoryId')
+      .getRawMany<{ categoryId: string | null; total: string }>();
+  }
+
+  /** Historique mensuel des dépenses par catégorie sur les mois complets précédant `range`. */
+  private async recentMonthlyCategoryTotals(userId: string, range: MonthRange): Promise<Map<string, number[]>> {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const months = Array.from({ length: RECURRENCE_MONTHS_BACK }, (_, i) =>
+      shiftMonth(range.year, range.month, -(RECURRENCE_MONTHS_BACK - i)),
+    );
+
+    const monthlyMaps = await Promise.all(
+      months.map(({ year, month }) => {
+        // On ne se sert que de start/end ici, pas de daysElapsed — peu importe
+        // que ce mois passé soit ou non "le mois en cours" selon resolveMonthRange.
+        const monthRange = resolveMonthRange(`${year}-${pad(month)}`);
+        return this.sumExpensesByActualCategory(userId, monthRange.start, monthRange.end);
+      }),
+    );
+
+    const totals = new Map<string, number[]>();
+    for (const monthMap of monthlyMaps) {
+      for (const [categoryKey, total] of monthMap) {
+        const arr = totals.get(categoryKey) ?? [];
+        arr.push(total);
+        totals.set(categoryKey, arr);
+      }
+    }
+    return totals;
+  }
+
+  private async recurringAveragesByCategory(userId: string, range: MonthRange): Promise<Map<string, number>> {
+    const monthlyTotals = await this.recentMonthlyCategoryTotals(userId, range);
+    return detectRecurringCategories(monthlyTotals);
+  }
+
+  /**
+   * Projection de fin de mois par catégorie : les catégories récurrentes
+   * (voir recurrence.util.ts) projettent leur montant mensuel habituel, les
+   * autres extrapolent linéairement le rythme du mois en cours. `total` est
+   * la somme de ces projections, utilisée pour le budget global et l'overview.
+   */
+  private async projectExpensesByCategory(
+    userId: string,
+    range: MonthRange,
+  ): Promise<{ perCategory: Map<string, number>; total: number }> {
+    const [spentByCategory, recurringAverages] = await Promise.all([
+      this.sumExpensesByActualCategory(userId, range.start, range.end),
+      this.recurringAveragesByCategory(userId, range),
+    ]);
+
+    const keys = new Set([...spentByCategory.keys(), ...recurringAverages.keys()]);
+    const perCategory = new Map<string, number>();
+    let total = 0;
+
+    for (const key of keys) {
+      const spent = spentByCategory.get(key) ?? 0;
+      const projected = projectCategorySpend(spent, range.daysElapsed, range.daysInMonth, recurringAverages.get(key));
+      perCategory.set(key, projected);
+      total += projected;
+    }
+
+    return { perCategory, total };
   }
 
   private async sumWhere(
