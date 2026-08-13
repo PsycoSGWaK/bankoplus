@@ -28,12 +28,15 @@ describe('BudgetsService', () => {
   let service: BudgetsService;
   let budgets: ReturnType<typeof budgetsRepoMock>;
   let transactions: { createQueryBuilder: jest.Mock };
-  let categorization: { assertVisible: jest.Mock };
+  let categorization: { assertVisible: jest.Mock; fallbackCategoryIds: jest.Mock };
 
   beforeEach(() => {
     budgets = budgetsRepoMock();
     transactions = { createQueryBuilder: jest.fn(() => qbMock()) };
-    categorization = { assertVisible: jest.fn().mockResolvedValue(undefined) };
+    categorization = {
+      assertVisible: jest.fn().mockResolvedValue(undefined),
+      fallbackCategoryIds: jest.fn().mockResolvedValue(new Set()),
+    };
     service = new BudgetsService(budgets as any, transactions as any, categorization as any);
   });
 
@@ -92,6 +95,31 @@ describe('BudgetsService', () => {
       expect(progress.remaining).toBe(0); // jamais négatif
       expect(progress.percentUsed).toBe(120);
       expect(progress.isOverBudget).toBe(true);
+
+      jest.useRealTimers();
+    });
+
+    it('never treats a fallback ("Non catégorisé") category as recurring, even if its total looks stable', async () => {
+      budgets.find.mockResolvedValueOnce([{ id: 'b1', categoryId: 'fallback-cat', monthlyLimit: 5000 }]);
+      categorization.fallbackCategoryIds.mockResolvedValueOnce(new Set(['fallback-cat']));
+
+      // Ordre d'appel réel : sumExpensesByCategory (mois courant) ->
+      // sumExpensesByActualCategory (mois courant) -> 3x sumExpensesByActualCategory (historique).
+      transactions.createQueryBuilder
+        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-100.00' }])) // spent (list)
+        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-100.00' }])) // spent (projection)
+        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-900.00' }])) // historique M-3
+        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-900.00' }])) // historique M-2
+        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-900.00' }])); // historique M-1
+
+      jest.useFakeTimers().setSystemTime(new Date(2026, 7, 10)); // jour 10 sur 31
+
+      const [progress] = await service.list('u1');
+
+      // Sans l'exclusion, la catégorie fallback serait jugée récurrente
+      // (900€ stables sur 3 mois) et projetée à 900€. Avec l'exclusion,
+      // elle reste extrapolée linéairement : 100€ / 10 jours * 31 jours = 310€.
+      expect(progress.projectedMonthEnd).toBeCloseTo(310, 5);
 
       jest.useRealTimers();
     });
