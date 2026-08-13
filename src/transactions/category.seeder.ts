@@ -21,7 +21,11 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
     kind: 'expense',
     keywords: ['CARREFOUR', 'LECLERC', 'AUCHAN', 'MONOPRIX', 'INTERMARCHE', 'LIDL', 'FRANPRIX', 'CASINO'],
   },
-  { name: 'Transport', kind: 'expense', keywords: ['SNCF', 'UBER', 'RATP', 'TOTAL', 'ESSO', 'BLABLACAR'] },
+  {
+    name: 'Transport',
+    kind: 'expense',
+    keywords: ['SNCF', 'UBER', 'RATP', 'TOTAL', 'ESSO', 'BLABLACAR', 'TRAINLINE', 'NAVIGO'],
+  },
   // Logement ne couvre que le loyer — les charges (énergie, assurance...) ont
   // leurs propres catégories ci-dessous.
   { name: 'Logement', kind: 'expense', keywords: ['LOYER'] },
@@ -31,15 +35,40 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
     kind: 'expense',
     keywords: ['ASSURANCE', 'AXA', 'MAIF', 'MACIF', 'ALLIANZ', 'MATMUT', 'GMF'],
   },
-  { name: 'Prêt', kind: 'expense', keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER'] },
+  // Organismes de crédit à la consommation, pas seulement immobilier.
+  {
+    name: 'Prêt',
+    kind: 'expense',
+    keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER', 'CETELEM', 'COFIDIS'],
+  },
   {
     name: 'Télécom',
     kind: 'expense',
     keywords: ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE MOBILE', 'SOSH', 'RED BY SFR'],
   },
-  { name: 'Loisirs', kind: 'expense', keywords: ['NETFLIX', 'SPOTIFY', 'CINEMA', 'STEAM'] },
+  {
+    name: 'Loisirs',
+    kind: 'expense',
+    keywords: ['NETFLIX', 'SPOTIFY', 'CINEMA', 'STEAM', 'CANAL PLUS', 'CANAL SAT'],
+  },
   { name: 'Santé', kind: 'expense', keywords: ['PHARMACIE', 'DOCTOLIB', 'MUTUELLE'] },
-  { name: 'Abonnements', kind: 'expense', keywords: ['ABONNEMENT'] },
+  // Abonnements logiciels / bancaires récurrents, hors télécom/loisirs déjà couverts ailleurs.
+  {
+    name: 'Abonnements',
+    kind: 'expense',
+    keywords: [
+      'ABONNEMENT',
+      'APPLE.COM',
+      'COTISATIONS BANCAIRES',
+      'FRAIS BANCAIRES',
+      'ALLDEBRID',
+      'OPENAI',
+      'MISTRAL.AI',
+      'SOUNDIIZ',
+      'ANTHROPIC',
+      'MEGA LIMITED',
+    ],
+  },
   { name: 'Non catégorisé (dépense)', kind: 'expense', keywords: [] },
 ];
 
