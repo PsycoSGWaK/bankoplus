@@ -237,8 +237,19 @@ export class BudgetsService {
   }
 
   private async recurringAveragesByCategory(userId: string, range: MonthRange): Promise<Map<string, number>> {
-    const monthlyTotals = await this.recentMonthlyCategoryTotals(userId, range);
-    return detectRecurringCategories(monthlyTotals);
+    const [monthlyTotals, fallbackIds] = await Promise.all([
+      this.recentMonthlyCategoryTotals(userId, range),
+      this.categorization.fallbackCategoryIds(),
+    ]);
+
+    const recurring = detectRecurringCategories(monthlyTotals);
+    // "Non catégorisé" est un sac fourre-tout hétérogène, pas une facture
+    // fixe : même si son total paraît stable par coïncidence, on doit
+    // toujours l'extrapoler linéairement, jamais projeter une "moyenne".
+    for (const fallbackId of fallbackIds) {
+      recurring.delete(fallbackId);
+    }
+    return recurring;
   }
 
   /**

@@ -46,6 +46,23 @@ export class CategorizationService {
     return category.id;
   }
 
+  /**
+   * Ids des catégories "Non catégorisé" (dépense + revenu). C'est un sac
+   * fourre-tout hétérogène par construction (tout ce qu'aucune règle ne
+   * reconnaît) — son total peut sembler stable d'un mois sur l'autre par
+   * coïncidence, mais ça ne représente pas une facture fixe. Sert à exclure
+   * ces catégories de la détection de dépenses récurrentes (voir budgets).
+   */
+  async fallbackCategoryIds(): Promise<Set<string>> {
+    const categories = await this.categories.find({
+      where: [
+        { name: FALLBACK_EXPENSE_CATEGORY, userId: IsNull() },
+        { name: FALLBACK_INCOME_CATEGORY, userId: IsNull() },
+      ],
+    });
+    return new Set(categories.map((category) => category.id));
+  }
+
   /** Catégories visibles par l'utilisateur : les catégories par défaut + les siennes. */
   findVisibleCategories(userId: string): Promise<Category[]> {
     return this.categories.find({
