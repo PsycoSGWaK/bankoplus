@@ -36,10 +36,13 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
     keywords: ['ASSURANCE', 'AXA', 'MAIF', 'MACIF', 'ALLIANZ', 'MATMUT', 'GMF'],
   },
   // Organismes de crédit à la consommation, pas seulement immobilier.
+  // 'CEN' est risqué (matche aussi "CENTRE DE LOISI"/"CENTRE DU CHATE") mais
+  // le volume de vrais faux positifs constaté est minime — même compromis
+  // assumé que EDF/REDFOX documenté plus haut.
   {
     name: 'Prêt',
     kind: 'expense',
-    keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER', 'CETELEM', 'COFIDIS'],
+    keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER', 'CETELEM', 'COFIDIS', 'CEN'],
   },
   {
     name: 'Télécom',
