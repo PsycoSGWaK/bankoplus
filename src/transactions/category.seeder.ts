@@ -22,10 +22,24 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
     keywords: ['CARREFOUR', 'LECLERC', 'AUCHAN', 'MONOPRIX', 'INTERMARCHE', 'LIDL', 'FRANPRIX', 'CASINO'],
   },
   { name: 'Transport', kind: 'expense', keywords: ['SNCF', 'UBER', 'RATP', 'TOTAL', 'ESSO', 'BLABLACAR'] },
-  { name: 'Logement', kind: 'expense', keywords: ['EDF', 'ENGIE', 'VEOLIA', 'LOYER'] },
+  // Logement ne couvre que le loyer — les charges (énergie, assurance...) ont
+  // leurs propres catégories ci-dessous.
+  { name: 'Logement', kind: 'expense', keywords: ['LOYER'] },
+  { name: 'Énergie', kind: 'expense', keywords: ['EDF', 'ENGIE', 'GRDF', 'VEOLIA'] },
+  {
+    name: 'Assurances',
+    kind: 'expense',
+    keywords: ['ASSURANCE', 'AXA', 'MAIF', 'MACIF', 'ALLIANZ', 'MATMUT', 'GMF'],
+  },
+  { name: 'Prêt', kind: 'expense', keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER'] },
+  {
+    name: 'Télécom',
+    kind: 'expense',
+    keywords: ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE MOBILE', 'SOSH', 'RED BY SFR'],
+  },
   { name: 'Loisirs', kind: 'expense', keywords: ['NETFLIX', 'SPOTIFY', 'CINEMA', 'STEAM'] },
   { name: 'Santé', kind: 'expense', keywords: ['PHARMACIE', 'DOCTOLIB', 'MUTUELLE'] },
-  { name: 'Abonnements', kind: 'expense', keywords: ['ABONNEMENT', 'ASSURANCE'] },
+  { name: 'Abonnements', kind: 'expense', keywords: ['ABONNEMENT'] },
   { name: 'Non catégorisé (dépense)', kind: 'expense', keywords: [] },
 ];
 
@@ -49,39 +63,66 @@ export class CategorySeeder implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
-    if (!(await this.hasDefaults())) {
-      // Verrou nommé MySQL : plusieurs instances de l'app peuvent démarrer en
-      // même temps (redémarrage, plusieurs process de test en parallèle...).
-      // Sans lui, deux process peuvent tous les deux voir "aucune catégorie"
-      // et semer chacun leur propre jeu de catégories en double.
-      await this.categories.manager.query('SELECT GET_LOCK(?, 10)', [SEED_LOCK_NAME]);
-      try {
-        if (!(await this.hasDefaults())) {
-          await this.seed();
-        }
-      } finally {
-        await this.categories.manager.query('SELECT RELEASE_LOCK(?)', [SEED_LOCK_NAME]);
-      }
+    // Verrou nommé MySQL : plusieurs instances de l'app peuvent démarrer en
+    // même temps (redémarrage, plusieurs process de test en parallèle...).
+    // Sans lui, deux process peuvent tous les deux semer les mêmes
+    // catégories/règles en double. Le seed lui-même est idempotent par
+    // catégorie et par mot-clé, donc on peut le rejouer à chaque démarrage
+    // sans risque — utile pour ajouter de nouveaux défauts sur une base déjà
+    // seedée (ex: restructuration Énergie/Assurances/Prêt/Télécom).
+    await this.categories.manager.query('SELECT GET_LOCK(?, 10)', [SEED_LOCK_NAME]);
+    try {
+      await this.seed();
+    } finally {
+      await this.categories.manager.query('SELECT RELEASE_LOCK(?)', [SEED_LOCK_NAME]);
     }
   }
 
-  private async hasDefaults(): Promise<boolean> {
-    const existingDefaults = await this.categories.count({ where: { userId: IsNull() } });
-    return existingDefaults > 0;
+  private async seed(): Promise<void> {
+    const allDefaults = [...DEFAULT_EXPENSE_CATEGORIES, ...DEFAULT_INCOME_CATEGORIES];
+    const categoryByName = await this.ensureCategories(allDefaults);
+    await this.ensureRules(allDefaults, categoryByName);
   }
 
-  private async seed(): Promise<void> {
-    this.logger.log('Seed des catégories par défaut...');
-    for (const def of [...DEFAULT_EXPENSE_CATEGORIES, ...DEFAULT_INCOME_CATEGORIES]) {
-      const category = await this.categories.save(
-        this.categories.create({ name: def.name, kind: def.kind, userId: null }),
-      );
-      if (def.keywords.length > 0) {
-        await this.rules.save(
-          def.keywords.map((keyword) =>
-            this.rules.create({ categoryId: category.id, keyword: normalizeText(keyword), userId: null }),
-          ),
+  private async ensureCategories(defaults: DefaultCategory[]): Promise<Map<string, Category>> {
+    const existing = await this.categories.find({ where: { userId: IsNull() } });
+    const byName = new Map(existing.map((category) => [category.name, category]));
+
+    for (const def of defaults) {
+      if (!byName.has(def.name)) {
+        this.logger.log(`Seed de la catégorie par défaut manquante : ${def.name}`);
+        const created = await this.categories.save(
+          this.categories.create({ name: def.name, kind: def.kind, userId: null }),
         );
+        byName.set(def.name, created);
+      }
+    }
+    return byName;
+  }
+
+  private async ensureRules(defaults: DefaultCategory[], categoryByName: Map<string, Category>): Promise<void> {
+    // Indexées par mot-clé (unique parmi les règles système par construction) :
+    // permet de détecter à la fois "mot-clé jamais vu" (création) et
+    // "mot-clé déjà présent mais sous une ancienne catégorie" (relocalisation
+    // — ex: EDF vivait sous Logement avant l'ajout de la catégorie Énergie).
+    const existingRules = await this.rules.find({ where: { userId: IsNull() } });
+    const ruleByKeyword = new Map(existingRules.map((rule) => [rule.keyword, rule]));
+
+    for (const def of defaults) {
+      const category = categoryByName.get(def.name)!;
+      for (const rawKeyword of def.keywords) {
+        const keyword = normalizeText(rawKeyword);
+        const existingRule = ruleByKeyword.get(keyword);
+        if (!existingRule) {
+          const created = await this.rules.save(
+            this.rules.create({ categoryId: category.id, keyword, userId: null }),
+          );
+          ruleByKeyword.set(keyword, created);
+        } else if (existingRule.categoryId !== category.id) {
+          this.logger.log(`Relocalisation de la règle "${keyword}" vers ${def.name}`);
+          existingRule.categoryId = category.id;
+          await this.rules.save(existingRule);
+        }
       }
     }
   }
