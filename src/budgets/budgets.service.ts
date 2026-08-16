@@ -4,6 +4,7 @@ import { IsNull, Repository } from 'typeorm';
 import { Budget } from './entities/budget.entity';
 import { Transaction } from '../transactions/entities/transaction.entity';
 import { CategorizationService } from '../transactions/categorization.service';
+import { AccountsService } from '../accounts/accounts.service';
 import { UpsertBudgetDto } from './dto/upsert-budget.dto';
 import { SimulatePurchaseDto } from './dto/simulate-purchase.dto';
 import { MonthRange, previousMonthRange, resolveMonthRange } from './utils/month-range.util';
@@ -28,6 +29,9 @@ export interface MonthOverview {
   daysElapsed: number;
   daysInMonth: number;
   isCurrentMonth: boolean;
+  // Somme des soldes actuels connus (comptes avec référence renseignée),
+  // null si aucun compte n'a de référence — voir projectedBalance.
+  currentBalance: number | null;
   totalIncome: number;
   totalExpenses: number;
   projectedExpensesMonthEnd: number;
@@ -40,6 +44,7 @@ export class BudgetsService {
     @InjectRepository(Budget) private readonly budgets: Repository<Budget>,
     @InjectRepository(Transaction) private readonly transactions: Repository<Transaction>,
     private readonly categorization: CategorizationService,
+    private readonly accounts: AccountsService,
   ) {}
 
   async upsert(userId: string, dto: UpsertBudgetDto): Promise<Budget> {
@@ -106,23 +111,35 @@ export class BudgetsService {
   async overview(userId: string, month?: string): Promise<MonthOverview> {
     const range = resolveMonthRange(month);
 
-    const [totalIncome, { total: totalExpensesRaw }, projection] = await Promise.all([
+    const [totalIncome, { total: totalExpensesRaw }, projection, currentBalance] = await Promise.all([
       this.projectedTotalIncome(userId, range),
       this.sumWhere(userId, range.start, range.end, '<'),
       this.projectExpensesByCategory(userId, range),
+      this.totalKnownCurrentBalance(userId),
     ]);
     const totalExpenses = Math.abs(totalExpensesRaw);
     const projectedExpensesMonthEnd = projection.total;
+
+    // Avec un solde de compte connu, le solde projeté ne compte aucun revenu
+    // à venir (le salaire de fin de mois sert à vivre le mois suivant, pas à
+    // financer la fin du mois en cours) — seulement le solde actuel moins ce
+    // qu'il reste à dépenser sur les factures fixes pas encore tombées. Sans
+    // solde connu (aucun compte avec référence renseignée), on retombe sur
+    // l'ancien flux (revenus - dépenses projetées), moins précis mais mieux
+    // que rien.
+    const projectedBalance =
+      currentBalance !== null ? currentBalance - projection.remaining : totalIncome - projectedExpensesMonthEnd;
 
     return {
       month: `${range.year}-${String(range.month).padStart(2, '0')}`,
       daysElapsed: range.daysElapsed,
       daysInMonth: range.daysInMonth,
       isCurrentMonth: range.isCurrentMonth,
+      currentBalance,
       totalIncome,
       totalExpenses,
       projectedExpensesMonthEnd,
-      projectedBalance: totalIncome - projectedExpensesMonthEnd,
+      projectedBalance,
     };
   }
 
@@ -130,12 +147,14 @@ export class BudgetsService {
     const range = resolveMonthRange();
     const key = dto.categoryId ?? 'GLOBAL';
 
-    const [spentByCategory, budget, fixedExpenseIds] = await Promise.all([
+    const [spentByCategory, budget, fixedExpenseIds, currentBalance, projection] = await Promise.all([
       this.sumExpensesByCategory(userId, range.start, range.end),
       dto.categoryId
         ? this.budgets.findOne({ where: { userId, categoryId: dto.categoryId } })
         : this.budgets.findOne({ where: { userId, categoryId: IsNull() } }),
       this.categorization.fixedExpenseCategoryIds(userId),
+      this.totalKnownCurrentBalance(userId),
+      this.projectExpensesByCategory(userId, range),
     ]);
 
     const spentBefore = spentByCategory.get(key) ?? 0;
@@ -144,13 +163,21 @@ export class BudgetsService {
     // Une catégorie non flaggée "dépense fixe" (ou le budget global, qui est
     // une agrégation) n'a pas de projection fiable — on ne prétend pas
     // deviner la suite d'une dépense ponctuelle, on affiche juste le dépensé.
-    let projectedMonthEndAfter: number;
-    if (dto.categoryId && fixedExpenseIds.has(dto.categoryId)) {
-      const expectedRemaining = await this.expectedRemainingForCategory(userId, dto.categoryId, range);
-      projectedMonthEndAfter = spentAfter + expectedRemaining;
-    } else {
-      projectedMonthEndAfter = spentAfter;
-    }
+    // Pour une catégorie fixe, on réutilise le "pas encore tombé" déjà
+    // calculé par projectExpensesByCategory plutôt que de le recalculer.
+    const projectedMonthEndAfter =
+      dto.categoryId && fixedExpenseIds.has(dto.categoryId)
+        ? (projection.perCategory.get(dto.categoryId) ?? 0) + dto.amount
+        : spentAfter;
+
+    // Solde projeté actuel (même formule que overview()) moins l'achat
+    // simulé — pour répondre à "si je fais cet achat maintenant, il me
+    // restera combien d'ici la fin du mois ?".
+    const projectedBalanceNow =
+      currentBalance !== null
+        ? currentBalance - projection.remaining
+        : (await this.projectedTotalIncome(userId, range)) - projection.total;
+    const projectedBalanceAfterPurchase = projectedBalanceNow - dto.amount;
 
     return {
       categoryId: dto.categoryId ?? null,
@@ -158,6 +185,7 @@ export class BudgetsService {
       spentBeforePurchase: spentBefore,
       spentAfterPurchase: spentAfter,
       projectedMonthEndAfterPurchase: projectedMonthEndAfter,
+      projectedBalanceAfterPurchase,
       budgetLimit: budget?.monthlyLimit ?? null,
       wouldExceedBudget: budget ? spentAfter > budget.monthlyLimit : null,
       wouldExceedProjectedBudget: budget ? projectedMonthEndAfter > budget.monthlyLimit : null,
@@ -222,18 +250,6 @@ export class BudgetsService {
     return map;
   }
 
-  private async expectedRemainingForCategory(userId: string, categoryId: string, range: MonthRange): Promise<number> {
-    const previousRange = previousMonthRange(range);
-    const [previousEntries, currentEntries] = await Promise.all([
-      this.expenseEntriesByCategory(userId, previousRange.start, previousRange.end),
-      this.expenseEntriesByCategory(userId, range.start, range.end),
-    ]);
-    return expectedRemainingForFixedExpense(
-      previousEntries.get(categoryId) ?? [],
-      currentEntries.get(categoryId) ?? [],
-    );
-  }
-
   /**
    * Projection de fin de mois par catégorie : les catégories marquées
    * "dépense fixe" (voir fixed-expense-matching.util.ts) comparent les
@@ -249,7 +265,7 @@ export class BudgetsService {
   private async projectExpensesByCategory(
     userId: string,
     range: MonthRange,
-  ): Promise<{ perCategory: Map<string, number>; total: number }> {
+  ): Promise<{ perCategory: Map<string, number>; total: number; remaining: number }> {
     const [currentEntriesByCategory, fixedExpenseIds] = await Promise.all([
       this.expenseEntriesByCategory(userId, range.start, range.end),
       this.categorization.fixedExpenseCategoryIds(userId),
@@ -262,20 +278,28 @@ export class BudgetsService {
     const keys = new Set([...currentEntriesByCategory.keys(), ...previousEntriesByCategory.keys()]);
     const perCategory = new Map<string, number>();
     let total = 0;
+    // Part de `total` qui n'est pas encore dépensée (factures fixes pas
+    // encore tombées) — c'est ce qu'il reste à soustraire d'un solde de
+    // compte déjà à jour, par opposition à `total` qui inclut aussi ce qui
+    // est déjà dépensé.
+    let remaining = 0;
 
     for (const key of keys) {
       const currentEntries = currentEntriesByCategory.get(key) ?? [];
       const spent = currentEntries.reduce((sum, entry) => sum + Math.abs(entry.amount), 0);
 
-      const projected = fixedExpenseIds.has(key)
-        ? spent + expectedRemainingForFixedExpense(previousEntriesByCategory.get(key) ?? [], currentEntries)
-        : spent;
+      let projected = spent;
+      if (fixedExpenseIds.has(key)) {
+        const expectedRemaining = expectedRemainingForFixedExpense(previousEntriesByCategory.get(key) ?? [], currentEntries);
+        projected += expectedRemaining;
+        remaining += expectedRemaining;
+      }
 
       perCategory.set(key, projected);
       total += projected;
     }
 
-    return { perCategory, total };
+    return { perCategory, total, remaining };
   }
 
   /**
@@ -302,6 +326,14 @@ export class BudgetsService {
       this.sumIncomeByCategory(userId, previousRange.start, previousRange.end, salaryCategoryId, 'only'),
     ]);
     return otherIncome + previousSalary;
+  }
+
+  /** Somme des soldes actuels connus (comptes avec référence renseignée) ; null si aucun. */
+  private async totalKnownCurrentBalance(userId: string): Promise<number | null> {
+    const accounts = await this.accounts.findAllForUser(userId);
+    const known = accounts.filter((account) => account.currentBalance !== null);
+    if (known.length === 0) return null;
+    return known.reduce((sum, account) => sum + (account.currentBalance as number), 0);
   }
 
   private async sumIncomeByCategory(

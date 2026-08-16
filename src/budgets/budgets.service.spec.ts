@@ -14,6 +14,34 @@ function qbMock(rawMany: unknown[] = [], rawOne: unknown = { total: '0' }) {
   return qb;
 }
 
+// Certaines méthodes (overview, simulate) lancent plusieurs requêtes en
+// parallèle (Promise.all imbriqués) : l'ordre d'appel exact de
+// transactions.createQueryBuilder n'est pas stable/lisible à prédire à la
+// main. On route donc chaque appel selon les conditions where/andWhere
+// qu'il pose, plutôt que selon son rang d'appel.
+function trackedQb(responder: (conditions: string[], params: Record<string, unknown>, type: 'one' | 'many') => unknown) {
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+  const qb: any = {
+    select: jest.fn(() => qb),
+    addSelect: jest.fn(() => qb),
+    where: jest.fn((cond: string, p?: Record<string, unknown>) => {
+      conditions.push(cond);
+      Object.assign(params, p ?? {});
+      return qb;
+    }),
+    andWhere: jest.fn((cond: string, p?: Record<string, unknown>) => {
+      conditions.push(cond);
+      Object.assign(params, p ?? {});
+      return qb;
+    }),
+    groupBy: jest.fn(() => qb),
+    getRawOne: jest.fn(() => Promise.resolve(responder(conditions, params, 'one'))),
+    getRawMany: jest.fn(() => Promise.resolve(responder(conditions, params, 'many'))),
+  };
+  return qb;
+}
+
 function budgetsRepoMock() {
   return {
     findOne: jest.fn(),
@@ -29,6 +57,7 @@ describe('BudgetsService', () => {
   let budgets: ReturnType<typeof budgetsRepoMock>;
   let transactions: { createQueryBuilder: jest.Mock };
   let categorization: { assertVisible: jest.Mock; fixedExpenseCategoryIds: jest.Mock; salaryCategoryId: jest.Mock };
+  let accounts: { findAllForUser: jest.Mock };
 
   beforeEach(() => {
     budgets = budgetsRepoMock();
@@ -43,7 +72,10 @@ describe('BudgetsService', () => {
       // tests qui ne portent pas sur le revenu au nouveau mécanisme.
       salaryCategoryId: jest.fn().mockResolvedValue(null),
     };
-    service = new BudgetsService(budgets as any, transactions as any, categorization as any);
+    // Par défaut aucun compte n'a de solde de référence connu, pour ne pas
+    // coupler les tests existants au nouveau mécanisme de solde projeté.
+    accounts = { findAllForUser: jest.fn().mockResolvedValue([]) };
+    service = new BudgetsService(budgets as any, transactions as any, categorization as any, accounts as any);
   });
 
   describe('upsert', () => {
@@ -163,33 +195,6 @@ describe('BudgetsService', () => {
   });
 
   describe('overview', () => {
-    // overview() lance plusieurs requêtes en parallèle (Promise.all imbriqués) :
-    // l'ordre d'appel exact de transactions.createQueryBuilder n'est pas
-    // stable/lisible à prédire à la main. On route donc chaque appel selon les
-    // conditions where/andWhere qu'il pose, plutôt que selon son rang d'appel.
-    function trackedQb(responder: (conditions: string[], params: Record<string, unknown>, type: 'one' | 'many') => unknown) {
-      const conditions: string[] = [];
-      const params: Record<string, unknown> = {};
-      const qb: any = {
-        select: jest.fn(() => qb),
-        addSelect: jest.fn(() => qb),
-        where: jest.fn((cond: string, p?: Record<string, unknown>) => {
-          conditions.push(cond);
-          Object.assign(params, p ?? {});
-          return qb;
-        }),
-        andWhere: jest.fn((cond: string, p?: Record<string, unknown>) => {
-          conditions.push(cond);
-          Object.assign(params, p ?? {});
-          return qb;
-        }),
-        groupBy: jest.fn(() => qb),
-        getRawOne: jest.fn(() => Promise.resolve(responder(conditions, params, 'one'))),
-        getRawMany: jest.fn(() => Promise.resolve(responder(conditions, params, 'many'))),
-      };
-      return qb;
-    }
-
     it("bases this month's income on last month's salary instead of what has already landed this month", async () => {
       categorization.salaryCategoryId.mockResolvedValue('cat-salaire');
 
@@ -229,6 +234,54 @@ describe('BudgetsService', () => {
 
       expect(overview.totalIncome).toBe(900);
     });
+
+    it('subtracts what is still expected on fixed-expense bills from the real account balance, ignoring future income', async () => {
+      // Le salaire de fin de mois sert à vivre le mois suivant, pas à
+      // financer la fin du mois en cours : le solde projeté ne compte aucun
+      // revenu à venir, seulement le solde réel moins les factures fixes pas
+      // encore tombées.
+      categorization.salaryCategoryId.mockResolvedValue(null);
+      categorization.fixedExpenseCategoryIds.mockResolvedValue(new Set(['cat-loyer']));
+      // Un compte avec solde de référence connu (500€), un sans (ignoré).
+      accounts.findAllForUser.mockResolvedValue([{ currentBalance: 500 }, { currentBalance: null }]);
+
+      transactions.createQueryBuilder.mockImplementation(() =>
+        trackedQb((conditions, params, type) => {
+          const joined = conditions.join(' | ');
+          const isPreviousMonth = params.start === '2026-07-01';
+
+          if (joined.includes('t.amount > 0')) {
+            return type === 'one' ? { total: '0.00' } : []; // revenus non pertinents ici
+          }
+          if (joined.includes('t.amount < 0')) {
+            if (type === 'one') return { total: '0.00' }; // rien dépensé ce mois-ci
+            // expenseEntriesByCategory : loyer tombé en juillet, pas encore en août.
+            return isPreviousMonth ? [{ categoryId: 'cat-loyer', label: 'LOYER', amount: '-800.00' }] : [];
+          }
+          return type === 'one' ? { total: '0' } : [];
+        }),
+      );
+
+      jest.useFakeTimers().setSystemTime(new Date(2026, 7, 16)); // 16 août 2026
+
+      const overview = await service.overview('u1');
+
+      expect(overview.currentBalance).toBe(500);
+      // 500€ actuels - 800€ de loyer pas encore prélevé = déficit prévisible.
+      expect(overview.projectedBalance).toBe(-300);
+
+      jest.useRealTimers();
+    });
+
+    it('falls back to the income-minus-expenses formula when no account has a known balance', async () => {
+      accounts.findAllForUser.mockResolvedValue([{ currentBalance: null }]);
+      transactions.createQueryBuilder.mockReturnValue(qbMock([], { total: '100.00' }));
+
+      const overview = await service.overview('u1');
+
+      expect(overview.currentBalance).toBeNull();
+      expect(overview.projectedBalance).toBe(overview.totalIncome - overview.projectedExpensesMonthEnd);
+    });
   });
 
   describe('simulate', () => {
@@ -258,18 +311,43 @@ describe('BudgetsService', () => {
     });
 
     it('adds the still-pending previous-month bill on top of a simulated purchase for a fixed-expense category', async () => {
-      categorization.fixedExpenseCategoryIds.mockResolvedValueOnce(new Set(['cat-assurance']));
-      transactions.createQueryBuilder
-        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-assurance', total: '0.00' }])) // spentBefore
-        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-assurance', label: 'ASSURANCE HABITATION', amount: '-50.00' }])) // mois précédent
-        .mockReturnValueOnce(qbMock([])); // mois courant : pas encore prélevée
+      categorization.fixedExpenseCategoryIds.mockResolvedValue(new Set(['cat-assurance']));
       budgets.findOne.mockResolvedValueOnce({ id: 'b1', categoryId: 'cat-assurance', monthlyLimit: 100 });
+
+      transactions.createQueryBuilder.mockImplementation(() =>
+        trackedQb((conditions, params, type) => {
+          const joined = conditions.join(' | ');
+          const isPreviousMonth = params.start === '2026-07-01';
+
+          if (joined.includes('t.amount > 0')) {
+            return type === 'one' ? { total: '0.00' } : []; // revenus non pertinents ici
+          }
+          if (joined.includes('t.amount < 0')) {
+            if (isPreviousMonth) {
+              // Assurance tombée en juillet, pas encore en août.
+              return [{ categoryId: 'cat-assurance', label: 'ASSURANCE HABITATION', amount: '-50.00', total: '-50.00' }];
+            }
+            return type === 'one' ? { total: '0.00' } : []; // rien dépensé en assurance ce mois-ci
+          }
+          return type === 'one' ? { total: '0' } : [];
+        }),
+      );
 
       const result = await service.simulate('u1', { amount: 20, categoryId: 'cat-assurance' });
 
       expect(result.spentAfterPurchase).toBe(20);
       // 20€ d'achat simulé + 50€ d'assurance pas encore prélevée ce mois-ci.
       expect(result.projectedMonthEndAfterPurchase).toBe(70);
+    });
+
+    it('returns the projected balance after the purchase based on the real account balance', async () => {
+      accounts.findAllForUser.mockResolvedValue([{ currentBalance: 300 }]);
+      transactions.createQueryBuilder.mockReturnValue(qbMock([], { total: '0' }));
+
+      const result = await service.simulate('u1', { amount: 50 });
+
+      // 300€ actuels - 0€ de reste attendu - 50€ d'achat simulé.
+      expect(result.projectedBalanceAfterPurchase).toBe(250);
     });
   });
 });
