@@ -5,9 +5,10 @@ import { BudgetsService } from './budgets.service';
 import { BudgetsController } from './budgets.controller';
 import { AuthModule } from '../auth/auth.module';
 import { TransactionsModule } from '../transactions/transactions.module';
+import { AccountsModule } from '../accounts/accounts.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Budget]), TransactionsModule, AuthModule],
+  imports: [TypeOrmModule.forFeature([Budget]), TransactionsModule, AccountsModule, AuthModule],
   controllers: [BudgetsController],
   providers: [BudgetsService],
 })

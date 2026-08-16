@@ -29,6 +29,7 @@ describe('BudgetsService', () => {
   let budgets: ReturnType<typeof budgetsRepoMock>;
   let transactions: { createQueryBuilder: jest.Mock };
   let categorization: { assertVisible: jest.Mock; fixedExpenseCategoryIds: jest.Mock; salaryCategoryId: jest.Mock };
+  let accounts: { findAllForUser: jest.Mock };
 
   beforeEach(() => {
     budgets = budgetsRepoMock();
@@ -43,7 +44,10 @@ describe('BudgetsService', () => {
       // tests qui ne portent pas sur le revenu au nouveau mécanisme.
       salaryCategoryId: jest.fn().mockResolvedValue(null),
     };
-    service = new BudgetsService(budgets as any, transactions as any, categorization as any);
+    // Par défaut aucun compte n'a de solde de référence connu, pour ne pas
+    // coupler les tests existants au nouveau mécanisme de solde projeté.
+    accounts = { findAllForUser: jest.fn().mockResolvedValue([]) };
+    service = new BudgetsService(budgets as any, transactions as any, categorization as any, accounts as any);
   });
 
   describe('upsert', () => {
@@ -228,6 +232,57 @@ describe('BudgetsService', () => {
       const overview = await service.overview('u1');
 
       expect(overview.totalIncome).toBe(900);
+    });
+
+    it('bases projectedBalance on the real known account balance, adding only what has not happened yet', async () => {
+      categorization.salaryCategoryId.mockResolvedValue('cat-salaire');
+      // Un compte avec solde de référence connu (500€), un sans (ignoré).
+      accounts.findAllForUser.mockResolvedValue([{ currentBalance: 500 }, { currentBalance: null }]);
+
+      transactions.createQueryBuilder.mockImplementation(() =>
+        trackedQb((conditions, params, type) => {
+          const joined = conditions.join(' | ');
+          const isPreviousMonth = params.start === '2026-07-01';
+
+          if (joined.includes('t.amount > 0') && joined.includes('!= :categoryId')) {
+            return { total: '0.00' }; // pas d'autre revenu ce mois-ci
+          }
+          if (joined.includes('t.amount > 0') && joined.includes('t.categoryId = :categoryId')) {
+            if (type === 'one') {
+              // sumIncomeByCategory (projectedTotalIncome, non lié au solde)
+              return isPreviousMonth ? { total: '2000.00' } : { total: '0.00' };
+            }
+            // incomeEntriesForCategory (expectedRemainingSalary) : salaire de
+            // juillet, pas encore repassé en août.
+            return isPreviousMonth ? [{ label: 'REVIMA', amount: '2000.00' }] : [];
+          }
+          if (joined.includes('t.amount < 0')) {
+            if (type === 'one') return { total: '-300.00' }; // sumWhere : dépenses du mois
+            return [{ categoryId: 'cat-loisirs', label: 'X', amount: '-300.00' }]; // même montant, aucune catégorie fixe
+          }
+          return type === 'one' ? { total: '0' } : [];
+        }),
+      );
+
+      jest.useFakeTimers().setSystemTime(new Date(2026, 7, 16)); // 16 août 2026
+
+      const overview = await service.overview('u1');
+
+      expect(overview.currentBalance).toBe(500);
+      // 500€ actuels + 2000€ de salaire pas encore tombé - 0€ de reste attendu côté dépenses.
+      expect(overview.projectedBalance).toBe(2500);
+
+      jest.useRealTimers();
+    });
+
+    it('falls back to the income-minus-expenses formula when no account has a known balance', async () => {
+      accounts.findAllForUser.mockResolvedValue([{ currentBalance: null }]);
+      transactions.createQueryBuilder.mockReturnValue(qbMock([], { total: '100.00' }));
+
+      const overview = await service.overview('u1');
+
+      expect(overview.currentBalance).toBeNull();
+      expect(overview.projectedBalance).toBe(overview.totalIncome - overview.projectedExpensesMonthEnd);
     });
   });
 
