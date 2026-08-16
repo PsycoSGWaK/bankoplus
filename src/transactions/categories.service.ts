@@ -4,6 +4,7 @@ import { IsNull, Repository } from 'typeorm';
 import { Category } from './entities/category.entity';
 import { CategoryRule } from './entities/category-rule.entity';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { UpdateCategoryDto } from './dto/update-category.dto';
 import { CreateCategoryRuleDto } from './dto/create-category-rule.dto';
 import { CategorizationService } from './categorization.service';
 import { normalizeText } from '../common/utils/normalize-text';
@@ -21,7 +22,15 @@ export class CategoriesService {
   }
 
   create(userId: string, dto: CreateCategoryDto): Promise<Category> {
-    return this.categories.save(this.categories.create({ ...dto, userId }));
+    return this.categories.save(
+      this.categories.create({ ...dto, isFixedExpense: dto.isFixedExpense ?? false, userId }),
+    );
+  }
+
+  async update(userId: string, categoryId: string, dto: UpdateCategoryDto): Promise<Category> {
+    const category = await this.assertOwned(userId, categoryId);
+    category.isFixedExpense = dto.isFixedExpense;
+    return this.categories.save(category);
   }
 
   async remove(userId: string, categoryId: string): Promise<void> {
@@ -34,7 +43,13 @@ export class CategoriesService {
     // créée ici est toujours personnelle à l'utilisateur.
     await this.categorization.assertVisible(userId, categoryId);
     return this.rules.save(
-      this.rules.create({ categoryId, keyword: normalizeText(dto.keyword), userId }),
+      this.rules.create({
+        categoryId,
+        keyword: normalizeText(dto.keyword),
+        minAmount: dto.minAmount ?? null,
+        direction: dto.direction ?? null,
+        userId,
+      }),
     );
   }
 

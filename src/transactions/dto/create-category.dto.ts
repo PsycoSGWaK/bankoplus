@@ -1,4 +1,4 @@
-import { IsIn, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { CategoryKind } from '../entities/category.entity';
 
 export class CreateCategoryDto {
@@ -8,4 +8,8 @@ export class CreateCategoryDto {
 
   @IsIn(['income', 'expense'])
   kind!: CategoryKind;
+
+  @IsOptional()
+  @IsBoolean()
+  isFixedExpense?: boolean;
 }

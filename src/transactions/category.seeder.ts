@@ -9,6 +9,11 @@ interface DefaultCategory {
   name: string;
   kind: CategoryKind;
   keywords: string[];
+  // Facture fixe qui tombe en général une fois par mois (loyer, énergie,
+  // assurance, prêt, télécom, abonnements) — sert au budget pour projeter le
+  // montant récurrent habituel plutôt que d'extrapoler linéairement. Absent
+  // = false (dépense variable, ex: Alimentation, Loisirs).
+  isFixedExpense?: boolean;
 }
 
 // Catégories et mots-clés de démarrage — un utilisateur peut ajouter les
@@ -28,26 +33,39 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
   },
   // Logement ne couvre que le loyer — les charges (énergie, assurance...) ont
   // leurs propres catégories ci-dessous.
-  { name: 'Logement', kind: 'expense', keywords: ['LOYER'] },
-  { name: 'Énergie', kind: 'expense', keywords: ['EDF', 'ENGIE', 'GRDF', 'VEOLIA'] },
+  { name: 'Logement', kind: 'expense', keywords: ['LOYER'], isFixedExpense: true },
+  {
+    name: 'Énergie',
+    kind: 'expense',
+    keywords: ['EDF', 'ENGIE', 'GRDF', 'VEOLIA'],
+    isFixedExpense: true,
+  },
   {
     name: 'Assurances',
     kind: 'expense',
     keywords: ['ASSURANCE', 'AXA', 'MAIF', 'MACIF', 'ALLIANZ', 'MATMUT', 'GMF'],
+    isFixedExpense: true,
   },
   // Organismes de crédit à la consommation, pas seulement immobilier.
-  // 'CEN' est risqué (matche aussi "CENTRE DE LOISI"/"CENTRE DU CHATE") mais
-  // le volume de vrais faux positifs constaté est minime — même compromis
-  // assumé que EDF/REDFOX documenté plus haut.
+  // Le nom/sigle de la banque de l'utilisateur (ex: 'CEN' pour Caisse
+  // d'Épargne Normandie) n'a pas sa place ici : trop ambigu comme mot-clé
+  // système global (matche aussi "CENTRE DE LOISI"/"CENTRE DU CHATE", et
+  // rien ne garantit qu'un autre utilisateur n'a pas un sigle différent qui
+  // collisionne avec autre chose) — à configurer en règle personnelle avec
+  // une garde montant/sens (voir CategoryRule.minAmount/direction).
   {
     name: 'Prêt',
     kind: 'expense',
-    keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER', 'CETELEM', 'COFIDIS', 'CEN'],
+    keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER', 'CETELEM', 'COFIDIS'],
+    isFixedExpense: true,
   },
   {
     name: 'Télécom',
     kind: 'expense',
-    keywords: ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE MOBILE', 'SOSH', 'RED BY SFR'],
+    // 'FREE' générique couvre FREEBOX et FREE MOBILE (deux prélèvements
+    // distincts chez le même FAI) sans avoir à lister chaque variante.
+    keywords: ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE', 'SOSH', 'RED BY SFR'],
+    isFixedExpense: true,
   },
   {
     name: 'Loisirs',
@@ -71,12 +89,18 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
       'ANTHROPIC',
       'MEGA LIMITED',
     ],
+    isFixedExpense: true,
   },
   { name: 'Non catégorisé (dépense)', kind: 'expense', keywords: [] },
 ];
 
 const DEFAULT_INCOME_CATEGORIES: DefaultCategory[] = [
   { name: 'Salaire', kind: 'income', keywords: ['VIREMENT SALAIRE', 'SALAIRE'] },
+  // Déblocage de prêt (crédit reçu à l'ouverture) : jamais de mot-clé système
+  // ici, le libellé de l'organisme prêteur est propre à la banque de chaque
+  // utilisateur — à configurer via une règle personnelle (voir CategoryRule
+  // minAmount/direction).
+  { name: 'Prêt - Demande', kind: 'income', keywords: [] },
   { name: 'Non catégorisé (revenu)', kind: 'income', keywords: [] },
 ];
 
@@ -121,12 +145,18 @@ export class CategorySeeder implements OnModuleInit {
     const byName = new Map(existing.map((category) => [category.name, category]));
 
     for (const def of defaults) {
-      if (!byName.has(def.name)) {
+      const isFixedExpense = def.isFixedExpense ?? false;
+      const existing = byName.get(def.name);
+      if (!existing) {
         this.logger.log(`Seed de la catégorie par défaut manquante : ${def.name}`);
         const created = await this.categories.save(
-          this.categories.create({ name: def.name, kind: def.kind, userId: null }),
+          this.categories.create({ name: def.name, kind: def.kind, isFixedExpense, userId: null }),
         );
         byName.set(def.name, created);
+      } else if (existing.isFixedExpense !== isFixedExpense) {
+        this.logger.log(`Mise à jour du flag dépense fixe de ${def.name} : ${isFixedExpense}`);
+        existing.isFixedExpense = isFixedExpense;
+        await this.categories.save(existing);
       }
     }
     return byName;

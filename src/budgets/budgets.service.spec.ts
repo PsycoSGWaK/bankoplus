@@ -28,14 +28,17 @@ describe('BudgetsService', () => {
   let service: BudgetsService;
   let budgets: ReturnType<typeof budgetsRepoMock>;
   let transactions: { createQueryBuilder: jest.Mock };
-  let categorization: { assertVisible: jest.Mock; fallbackCategoryIds: jest.Mock };
+  let categorization: { assertVisible: jest.Mock; fixedExpenseCategoryIds: jest.Mock };
 
   beforeEach(() => {
     budgets = budgetsRepoMock();
     transactions = { createQueryBuilder: jest.fn(() => qbMock()) };
     categorization = {
       assertVisible: jest.fn().mockResolvedValue(undefined),
-      fallbackCategoryIds: jest.fn().mockResolvedValue(new Set()),
+      // Par défaut toutes les catégories testées sont "dépense fixe", pour
+      // ne pas casser les tests existants qui vérifient juste la mécanique
+      // de détection de récurrence — la restriction elle-même a son propre test.
+      fixedExpenseCategoryIds: jest.fn().mockResolvedValue(new Set(['cat-1', 'fallback-cat'])),
     };
     service = new BudgetsService(budgets as any, transactions as any, categorization as any);
   });
@@ -99,9 +102,9 @@ describe('BudgetsService', () => {
       jest.useRealTimers();
     });
 
-    it('never treats a fallback ("Non catégorisé") category as recurring, even if its total looks stable', async () => {
+    it('never treats a category as recurring unless it is flagged "dépense fixe", even if its total looks stable', async () => {
       budgets.find.mockResolvedValueOnce([{ id: 'b1', categoryId: 'fallback-cat', monthlyLimit: 5000 }]);
-      categorization.fallbackCategoryIds.mockResolvedValueOnce(new Set(['fallback-cat']));
+      categorization.fixedExpenseCategoryIds.mockResolvedValueOnce(new Set()); // fallback-cat n'est pas une dépense fixe
 
       // Ordre d'appel réel : sumExpensesByCategory (mois courant) ->
       // sumExpensesByActualCategory (mois courant) -> 3x sumExpensesByActualCategory (historique).

@@ -237,17 +237,20 @@ export class BudgetsService {
   }
 
   private async recurringAveragesByCategory(userId: string, range: MonthRange): Promise<Map<string, number>> {
-    const [monthlyTotals, fallbackIds] = await Promise.all([
+    const [monthlyTotals, fixedExpenseIds] = await Promise.all([
       this.recentMonthlyCategoryTotals(userId, range),
-      this.categorization.fallbackCategoryIds(),
+      this.categorization.fixedExpenseCategoryIds(userId),
     ]);
 
     const recurring = detectRecurringCategories(monthlyTotals);
-    // "Non catégorisé" est un sac fourre-tout hétérogène, pas une facture
-    // fixe : même si son total paraît stable par coïncidence, on doit
-    // toujours l'extrapoler linéairement, jamais projeter une "moyenne".
-    for (const fallbackId of fallbackIds) {
-      recurring.delete(fallbackId);
+    // Seules les catégories explicitement marquées "dépense fixe" (loyer,
+    // énergie, prêt...) peuvent être projetées sur leur moyenne : une
+    // catégorie variable (ex: "Non catégorisé") peut sembler stable sur 3
+    // mois par coïncidence sans être une vraie facture récurrente.
+    for (const categoryKey of recurring.keys()) {
+      if (!fixedExpenseIds.has(categoryKey)) {
+        recurring.delete(categoryKey);
+      }
     }
     return recurring;
   }
