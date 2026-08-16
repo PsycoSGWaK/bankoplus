@@ -59,7 +59,9 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
   {
     name: 'Télécom',
     kind: 'expense',
-    keywords: ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE MOBILE', 'SOSH', 'RED BY SFR'],
+    // 'FREE' générique couvre FREEBOX et FREE MOBILE (deux prélèvements
+    // distincts chez le même FAI) sans avoir à lister chaque variante.
+    keywords: ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE', 'SOSH', 'RED BY SFR'],
     isFixedExpense: true,
   },
   {
