@@ -35,10 +35,10 @@ describe('BudgetsService', () => {
     transactions = { createQueryBuilder: jest.fn(() => qbMock()) };
     categorization = {
       assertVisible: jest.fn().mockResolvedValue(undefined),
-      // Par défaut toutes les catégories testées sont "dépense fixe", pour
-      // ne pas casser les tests existants qui vérifient juste la mécanique
-      // de détection de récurrence — la restriction elle-même a son propre test.
-      fixedExpenseCategoryIds: jest.fn().mockResolvedValue(new Set(['cat-1', 'fallback-cat'])),
+      // Par défaut aucune catégorie n'est "dépense fixe", pour ne pas coupler
+      // les tests qui ne portent pas là-dessus au nouveau mécanisme —
+      // celui-ci a ses propres tests dédiés ci-dessous.
+      fixedExpenseCategoryIds: jest.fn().mockResolvedValue(new Set()),
     };
     service = new BudgetsService(budgets as any, transactions as any, categorization as any);
   });
@@ -85,9 +85,9 @@ describe('BudgetsService', () => {
   describe('list', () => {
     it('computes spent, remaining, percentUsed and over-budget flags per category', async () => {
       budgets.find.mockResolvedValueOnce([{ id: 'b1', categoryId: 'cat-1', monthlyLimit: 100 }]);
-      transactions.createQueryBuilder.mockReturnValueOnce(
-        qbMock([{ categoryId: 'cat-1', total: '-120.00' }]),
-      );
+      transactions.createQueryBuilder
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-1', total: '-120.00' }])) // sumExpensesByCategory
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-1', label: 'X', amount: '-120.00' }])); // expenseEntriesByCategory (mois courant)
 
       const now = new Date(2026, 7, 10); // jour 10 sur 31
       jest.useFakeTimers().setSystemTime(now);
@@ -102,27 +102,58 @@ describe('BudgetsService', () => {
       jest.useRealTimers();
     });
 
-    it('never treats a category as recurring unless it is flagged "dépense fixe", even if its total looks stable', async () => {
-      budgets.find.mockResolvedValueOnce([{ id: 'b1', categoryId: 'fallback-cat', monthlyLimit: 5000 }]);
-      categorization.fixedExpenseCategoryIds.mockResolvedValueOnce(new Set()); // fallback-cat n'est pas une dépense fixe
-
-      // Ordre d'appel réel : sumExpensesByCategory (mois courant) ->
-      // sumExpensesByActualCategory (mois courant) -> 3x sumExpensesByActualCategory (historique).
+    it('extrapolates linearly for a category not flagged "dépense fixe", ignoring any prior-month history', async () => {
+      budgets.find.mockResolvedValueOnce([{ id: 'b1', categoryId: 'cat-x', monthlyLimit: 5000 }]);
+      // fixedExpenseCategoryIds reste vide (défaut) -> pas de requête sur le
+      // mois précédent, extrapolation linéaire pure attendue.
       transactions.createQueryBuilder
-        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-100.00' }])) // spent (list)
-        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-100.00' }])) // spent (projection)
-        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-900.00' }])) // historique M-3
-        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-900.00' }])) // historique M-2
-        .mockReturnValueOnce(qbMock([{ categoryId: 'fallback-cat', total: '-900.00' }])); // historique M-1
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-x', total: '-100.00' }])) // sumExpensesByCategory
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-x', label: 'DIVERS', amount: '-100.00' }])); // mois courant
 
       jest.useFakeTimers().setSystemTime(new Date(2026, 7, 10)); // jour 10 sur 31
 
       const [progress] = await service.list('u1');
 
-      // Sans l'exclusion, la catégorie fallback serait jugée récurrente
-      // (900€ stables sur 3 mois) et projetée à 900€. Avec l'exclusion,
-      // elle reste extrapolée linéairement : 100€ / 10 jours * 31 jours = 310€.
+      // 100€ / 10 jours * 31 jours = 310€.
       expect(progress.projectedMonthEnd).toBeCloseTo(310, 5);
+      expect(transactions.createQueryBuilder).toHaveBeenCalledTimes(2);
+
+      jest.useRealTimers();
+    });
+
+    it('projects a fixed-expense category by carrying forward last month\'s bill until it repeats this month', async () => {
+      budgets.find.mockResolvedValueOnce([{ id: 'b1', categoryId: 'cat-loyer', monthlyLimit: 900 }]);
+      categorization.fixedExpenseCategoryIds.mockResolvedValueOnce(new Set(['cat-loyer']));
+
+      transactions.createQueryBuilder
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-loyer', total: '0.00' }])) // sumExpensesByCategory : rien encore prélevé
+        .mockReturnValueOnce(qbMock([])) // expenseEntriesByCategory mois courant : rien encore prélevé
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-loyer', label: 'LOYER', amount: '-800.00' }])); // mois précédent
+
+      jest.useFakeTimers().setSystemTime(new Date(2026, 7, 3)); // jour 3 sur 31, loyer pas encore tombé
+
+      const [progress] = await service.list('u1');
+
+      expect(progress.projectedMonthEnd).toBe(800);
+      expect(progress.isProjectedOverBudget).toBe(false);
+
+      jest.useRealTimers();
+    });
+
+    it('does not add anything extra once the fixed-expense bill has already passed this month', async () => {
+      budgets.find.mockResolvedValueOnce([{ id: 'b1', categoryId: 'cat-loyer', monthlyLimit: 900 }]);
+      categorization.fixedExpenseCategoryIds.mockResolvedValueOnce(new Set(['cat-loyer']));
+
+      transactions.createQueryBuilder
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-loyer', total: '-800.00' }])) // sumExpensesByCategory
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-loyer', label: 'LOYER', amount: '-800.00' }])) // mois courant : déjà tombé
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-loyer', label: 'LOYER', amount: '-800.00' }])); // mois précédent
+
+      jest.useFakeTimers().setSystemTime(new Date(2026, 7, 3));
+
+      const [progress] = await service.list('u1');
+
+      expect(progress.projectedMonthEnd).toBe(800);
 
       jest.useRealTimers();
     });
@@ -149,6 +180,21 @@ describe('BudgetsService', () => {
 
       expect(result.budgetLimit).toBeNull();
       expect(result.wouldExceedBudget).toBeNull();
+    });
+
+    it('adds the still-pending previous-month bill on top of a simulated purchase for a fixed-expense category', async () => {
+      categorization.fixedExpenseCategoryIds.mockResolvedValueOnce(new Set(['cat-assurance']));
+      transactions.createQueryBuilder
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-assurance', total: '0.00' }])) // spentBefore
+        .mockReturnValueOnce(qbMock([{ categoryId: 'cat-assurance', label: 'ASSURANCE HABITATION', amount: '-50.00' }])) // mois précédent
+        .mockReturnValueOnce(qbMock([])); // mois courant : pas encore prélevée
+      budgets.findOne.mockResolvedValueOnce({ id: 'b1', categoryId: 'cat-assurance', monthlyLimit: 100 });
+
+      const result = await service.simulate('u1', { amount: 20, categoryId: 'cat-assurance' });
+
+      expect(result.spentAfterPurchase).toBe(20);
+      // 20€ d'achat simulé + 50€ d'assurance pas encore prélevée ce mois-ci.
+      expect(result.projectedMonthEndAfterPurchase).toBe(70);
     });
   });
 });
