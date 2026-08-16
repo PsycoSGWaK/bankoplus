@@ -63,6 +63,18 @@ export class CategorizationService {
     return new Set(categories.map((category) => category.id));
   }
 
+  /**
+   * Ids des catégories visibles par l'utilisateur marquées "dépense fixe"
+   * (loyer, énergie, assurance...). Sert à restreindre la détection de
+   * dépenses récurrentes aux catégories que l'utilisateur (ou les défauts)
+   * ont explicitement désignées comme telles, plutôt qu'à toute catégorie
+   * statistiquement stable — voir budgets.
+   */
+  async fixedExpenseCategoryIds(userId: string): Promise<Set<string>> {
+    const categories = await this.findVisibleCategories(userId);
+    return new Set(categories.filter((category) => category.isFixedExpense).map((category) => category.id));
+  }
+
   /** Catégories visibles par l'utilisateur : les catégories par défaut + les siennes. */
   findVisibleCategories(userId: string): Promise<Category[]> {
     return this.categories.find({

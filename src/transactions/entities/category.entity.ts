@@ -19,6 +19,11 @@ export class Category {
   @Column({ type: 'varchar', length: 36, nullable: true })
   userId!: string | null;
 
+  // Facture fixe (loyer, énergie, prêt...) : sert au budget pour projeter le
+  // montant récurrent habituel plutôt que d'extrapoler linéairement.
+  @Column({ type: 'boolean', default: false })
+  isFixedExpense!: boolean;
+
   @CreateDateColumn()
   createdAt!: Date;
 }

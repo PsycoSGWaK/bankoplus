@@ -9,6 +9,11 @@ interface DefaultCategory {
   name: string;
   kind: CategoryKind;
   keywords: string[];
+  // Facture fixe qui tombe en général une fois par mois (loyer, énergie,
+  // assurance, prêt, télécom, abonnements) — sert au budget pour projeter le
+  // montant récurrent habituel plutôt que d'extrapoler linéairement. Absent
+  // = false (dépense variable, ex: Alimentation, Loisirs).
+  isFixedExpense?: boolean;
 }
 
 // Catégories et mots-clés de démarrage — un utilisateur peut ajouter les
@@ -28,12 +33,18 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
   },
   // Logement ne couvre que le loyer — les charges (énergie, assurance...) ont
   // leurs propres catégories ci-dessous.
-  { name: 'Logement', kind: 'expense', keywords: ['LOYER'] },
-  { name: 'Énergie', kind: 'expense', keywords: ['EDF', 'ENGIE', 'GRDF', 'VEOLIA'] },
+  { name: 'Logement', kind: 'expense', keywords: ['LOYER'], isFixedExpense: true },
+  {
+    name: 'Énergie',
+    kind: 'expense',
+    keywords: ['EDF', 'ENGIE', 'GRDF', 'VEOLIA'],
+    isFixedExpense: true,
+  },
   {
     name: 'Assurances',
     kind: 'expense',
     keywords: ['ASSURANCE', 'AXA', 'MAIF', 'MACIF', 'ALLIANZ', 'MATMUT', 'GMF'],
+    isFixedExpense: true,
   },
   // Organismes de crédit à la consommation, pas seulement immobilier.
   // 'CEN' est risqué (matche aussi "CENTRE DE LOISI"/"CENTRE DU CHATE") mais
@@ -43,11 +54,13 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
     name: 'Prêt',
     kind: 'expense',
     keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER', 'CETELEM', 'COFIDIS', 'CEN'],
+    isFixedExpense: true,
   },
   {
     name: 'Télécom',
     kind: 'expense',
     keywords: ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE MOBILE', 'SOSH', 'RED BY SFR'],
+    isFixedExpense: true,
   },
   {
     name: 'Loisirs',
@@ -71,6 +84,7 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
       'ANTHROPIC',
       'MEGA LIMITED',
     ],
+    isFixedExpense: true,
   },
   { name: 'Non catégorisé (dépense)', kind: 'expense', keywords: [] },
 ];
@@ -121,12 +135,18 @@ export class CategorySeeder implements OnModuleInit {
     const byName = new Map(existing.map((category) => [category.name, category]));
 
     for (const def of defaults) {
-      if (!byName.has(def.name)) {
+      const isFixedExpense = def.isFixedExpense ?? false;
+      const existing = byName.get(def.name);
+      if (!existing) {
         this.logger.log(`Seed de la catégorie par défaut manquante : ${def.name}`);
         const created = await this.categories.save(
-          this.categories.create({ name: def.name, kind: def.kind, userId: null }),
+          this.categories.create({ name: def.name, kind: def.kind, isFixedExpense, userId: null }),
         );
         byName.set(def.name, created);
+      } else if (existing.isFixedExpense !== isFixedExpense) {
+        this.logger.log(`Mise à jour du flag dépense fixe de ${def.name} : ${isFixedExpense}`);
+        existing.isFixedExpense = isFixedExpense;
+        await this.categories.save(existing);
       }
     }
     return byName;
