@@ -27,6 +27,12 @@ export class CategorizationService {
 
     const matches = candidateRules
       .filter((rule) => normalizedLabel.includes(rule.keyword))
+      .filter((rule) => rule.minAmount == null || Math.abs(amount) >= rule.minAmount)
+      .filter((rule) => {
+        if (rule.direction === 'credit') return amount > 0;
+        if (rule.direction === 'debit') return amount < 0;
+        return true;
+      })
       .sort((a, b) => {
         if (a.userId && !b.userId) return -1;
         if (!a.userId && b.userId) return 1;

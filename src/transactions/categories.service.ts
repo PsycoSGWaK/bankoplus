@@ -43,7 +43,13 @@ export class CategoriesService {
     // créée ici est toujours personnelle à l'utilisateur.
     await this.categorization.assertVisible(userId, categoryId);
     return this.rules.save(
-      this.rules.create({ categoryId, keyword: normalizeText(dto.keyword), userId }),
+      this.rules.create({
+        categoryId,
+        keyword: normalizeText(dto.keyword),
+        minAmount: dto.minAmount ?? null,
+        direction: dto.direction ?? null,
+        userId,
+      }),
     );
   }
 

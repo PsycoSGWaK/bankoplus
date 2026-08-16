@@ -82,6 +82,37 @@ describe('CategorizationService', () => {
       const categoryId = await service.suggest('u1', 'CB REDFOX STUDIO', -9.99);
       expect(categoryId).toBe('cat-x');
     });
+
+    it('ignores a rule with a minAmount guard when the transaction is below the threshold', async () => {
+      rules.find.mockResolvedValueOnce([
+        { id: 'r1', categoryId: 'cat-pret', keyword: 'CEN', minAmount: 100, direction: 'debit', userId: 'u1' },
+      ]);
+      categories.findOneOrFail.mockResolvedValueOnce({ id: 'fallback-expense' });
+
+      // "CENTRE DE LOISIRS" à -18€ passe sous le seuil de 100€ : pas de match.
+      const categoryId = await service.suggest('u1', 'CB CENTRE DE LOISIRS', -18);
+      expect(categoryId).toBe('fallback-expense');
+    });
+
+    it('applies a rule with a minAmount guard when the transaction meets the threshold', async () => {
+      rules.find.mockResolvedValueOnce([
+        { id: 'r1', categoryId: 'cat-pret', keyword: 'CEN', minAmount: 100, direction: 'debit', userId: 'u1' },
+      ]);
+
+      const categoryId = await service.suggest('u1', 'PRLV CEN', -231);
+      expect(categoryId).toBe('cat-pret');
+    });
+
+    it('ignores a rule with a direction guard on the wrong sign', async () => {
+      rules.find.mockResolvedValueOnce([
+        { id: 'r1', categoryId: 'cat-pret-demande', keyword: 'BPCE FINANCEMENT', minAmount: 100, direction: 'credit', userId: 'u1' },
+      ]);
+      categories.findOneOrFail.mockResolvedValueOnce({ id: 'fallback-expense' });
+
+      // Un débit ne peut jamais matcher une règle exigeant un crédit.
+      const categoryId = await service.suggest('u1', 'BPCE FINANCEMENT', -231);
+      expect(categoryId).toBe('fallback-expense');
+    });
   });
 
   describe('assertVisible', () => {

@@ -47,13 +47,16 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
     isFixedExpense: true,
   },
   // Organismes de crédit à la consommation, pas seulement immobilier.
-  // 'CEN' est risqué (matche aussi "CENTRE DE LOISI"/"CENTRE DU CHATE") mais
-  // le volume de vrais faux positifs constaté est minime — même compromis
-  // assumé que EDF/REDFOX documenté plus haut.
+  // Le nom/sigle de la banque de l'utilisateur (ex: 'CEN' pour Caisse
+  // d'Épargne Normandie) n'a pas sa place ici : trop ambigu comme mot-clé
+  // système global (matche aussi "CENTRE DE LOISI"/"CENTRE DU CHATE", et
+  // rien ne garantit qu'un autre utilisateur n'a pas un sigle différent qui
+  // collisionne avec autre chose) — à configurer en règle personnelle avec
+  // une garde montant/sens (voir CategoryRule.minAmount/direction).
   {
     name: 'Prêt',
     kind: 'expense',
-    keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER', 'CETELEM', 'COFIDIS', 'CEN'],
+    keywords: ['PRET', 'ECHEANCE PRET', 'CREDIT IMMOBILIER', 'CETELEM', 'COFIDIS'],
     isFixedExpense: true,
   },
   {
@@ -93,6 +96,11 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
 
 const DEFAULT_INCOME_CATEGORIES: DefaultCategory[] = [
   { name: 'Salaire', kind: 'income', keywords: ['VIREMENT SALAIRE', 'SALAIRE'] },
+  // Déblocage de prêt (crédit reçu à l'ouverture) : jamais de mot-clé système
+  // ici, le libellé de l'organisme prêteur est propre à la banque de chaque
+  // utilisateur — à configurer via une règle personnelle (voir CategoryRule
+  // minAmount/direction).
+  { name: 'Prêt - Demande', kind: 'income', keywords: [] },
   { name: 'Non catégorisé (revenu)', kind: 'income', keywords: [] },
 ];
 
