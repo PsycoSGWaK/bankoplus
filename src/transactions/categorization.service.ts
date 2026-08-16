@@ -4,7 +4,7 @@ import { IsNull, Repository } from 'typeorm';
 import { Category, CategoryKind } from './entities/category.entity';
 import { CategoryRule } from './entities/category-rule.entity';
 import { normalizeText } from '../common/utils/normalize-text';
-import { FALLBACK_EXPENSE_CATEGORY, FALLBACK_INCOME_CATEGORY } from './category.seeder';
+import { FALLBACK_EXPENSE_CATEGORY, FALLBACK_INCOME_CATEGORY, SALARY_CATEGORY } from './category.seeder';
 
 @Injectable()
 export class CategorizationService {
@@ -79,6 +79,12 @@ export class CategorizationService {
   async fixedExpenseCategoryIds(userId: string): Promise<Set<string>> {
     const categories = await this.findVisibleCategories(userId);
     return new Set(categories.filter((category) => category.isFixedExpense).map((category) => category.id));
+  }
+
+  /** Id de la catégorie système Salaire, ou null si elle n'existe pas (ne devrait pas arriver). */
+  async salaryCategoryId(): Promise<string | null> {
+    const category = await this.categories.findOne({ where: { name: SALARY_CATEGORY, userId: IsNull() } });
+    return category?.id ?? null;
   }
 
   /** Catégories visibles par l'utilisateur : les catégories par défaut + les siennes. */
