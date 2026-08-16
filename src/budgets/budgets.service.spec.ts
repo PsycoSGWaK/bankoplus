@@ -102,10 +102,10 @@ describe('BudgetsService', () => {
       jest.useRealTimers();
     });
 
-    it('extrapolates linearly for a category not flagged "dépense fixe", ignoring any prior-month history', async () => {
+    it('reports only the amount already spent for a category not flagged "dépense fixe", without extrapolating', async () => {
       budgets.find.mockResolvedValueOnce([{ id: 'b1', categoryId: 'cat-x', monthlyLimit: 5000 }]);
       // fixedExpenseCategoryIds reste vide (défaut) -> pas de requête sur le
-      // mois précédent, extrapolation linéaire pure attendue.
+      // mois précédent, pas de projection pour une dépense ponctuelle.
       transactions.createQueryBuilder
         .mockReturnValueOnce(qbMock([{ categoryId: 'cat-x', total: '-100.00' }])) // sumExpensesByCategory
         .mockReturnValueOnce(qbMock([{ categoryId: 'cat-x', label: 'DIVERS', amount: '-100.00' }])); // mois courant
@@ -114,8 +114,8 @@ describe('BudgetsService', () => {
 
       const [progress] = await service.list('u1');
 
-      // 100€ / 10 jours * 31 jours = 310€.
-      expect(progress.projectedMonthEnd).toBeCloseTo(310, 5);
+      // Pas d'extrapolation : la projection reste égale au dépensé.
+      expect(progress.projectedMonthEnd).toBe(100);
       expect(transactions.createQueryBuilder).toHaveBeenCalledTimes(2);
 
       jest.useRealTimers();
@@ -170,6 +170,9 @@ describe('BudgetsService', () => {
 
       expect(result.spentAfterPurchase).toBe(110);
       expect(result.wouldExceedBudget).toBe(true);
+      // Catégorie non flaggée "dépense fixe" : pas d'extrapolation, la
+      // projection après achat est juste le dépensé après achat.
+      expect(result.projectedMonthEndAfterPurchase).toBe(110);
     });
 
     it('returns null budget fields when no budget is set for the category', async () => {

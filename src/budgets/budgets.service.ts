@@ -7,7 +7,6 @@ import { CategorizationService } from '../transactions/categorization.service';
 import { UpsertBudgetDto } from './dto/upsert-budget.dto';
 import { SimulatePurchaseDto } from './dto/simulate-purchase.dto';
 import { MonthRange, previousMonthRange, resolveMonthRange } from './utils/month-range.util';
-import { projectMonthEnd } from './utils/projection.util';
 import { ExpenseEntry, expectedRemainingForFixedExpense } from './utils/fixed-expense-matching.util';
 
 const UNCATEGORIZED_KEY = 'UNCATEGORIZED';
@@ -142,14 +141,15 @@ export class BudgetsService {
     const spentBefore = spentByCategory.get(key) ?? 0;
     const spentAfter = spentBefore + dto.amount;
 
-    // Une simulation sur le budget global n'a pas de catégorie propre (c'est
-    // une agrégation) : elle reste extrapolée linéairement, comme avant.
+    // Une catégorie non flaggée "dépense fixe" (ou le budget global, qui est
+    // une agrégation) n'a pas de projection fiable — on ne prétend pas
+    // deviner la suite d'une dépense ponctuelle, on affiche juste le dépensé.
     let projectedMonthEndAfter: number;
     if (dto.categoryId && fixedExpenseIds.has(dto.categoryId)) {
       const expectedRemaining = await this.expectedRemainingForCategory(userId, dto.categoryId, range);
       projectedMonthEndAfter = spentAfter + expectedRemaining;
     } else {
-      projectedMonthEndAfter = projectMonthEnd(spentAfter, range.daysElapsed, range.daysInMonth);
+      projectedMonthEndAfter = spentAfter;
     }
 
     return {
@@ -238,8 +238,12 @@ export class BudgetsService {
    * Projection de fin de mois par catégorie : les catégories marquées
    * "dépense fixe" (voir fixed-expense-matching.util.ts) comparent les
    * dépenses du mois précédent à celles déjà passées ce mois-ci et projettent
-   * ce qui n'est pas encore tombé ; les autres extrapolent linéairement le
-   * rythme du mois en cours. `total` est la somme de ces projections, utilisée
+   * ce qui n'est pas encore tombé. Les autres catégories (dépense ponctuelle
+   * par nature — courses, loisirs, non catégorisé...) n'ont pas de mécanisme
+   * de projection fiable : extrapoler linéairement une grosse dépense isolée
+   * comme si elle allait se reproduire au même rythme jusqu'à la fin du mois
+   * est trompeur, donc on affiche simplement ce qui est déjà dépensé, sans
+   * prétendre deviner la suite. `total` est la somme de ces valeurs, utilisée
    * pour le budget global et l'overview.
    */
   private async projectExpensesByCategory(
@@ -265,7 +269,7 @@ export class BudgetsService {
 
       const projected = fixedExpenseIds.has(key)
         ? spent + expectedRemainingForFixedExpense(previousEntriesByCategory.get(key) ?? [], currentEntries)
-        : projectMonthEnd(spent, range.daysElapsed, range.daysInMonth);
+        : spent;
 
       perCategory.set(key, projected);
       total += projected;
