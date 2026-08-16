@@ -120,22 +120,16 @@ export class BudgetsService {
     const totalExpenses = Math.abs(totalExpensesRaw);
     const projectedExpensesMonthEnd = projection.total;
 
-    // Avec un solde de compte connu, on projette à partir de ce solde réel
-    // plutôt que du seul flux du mois (revenus - dépenses), en n'ajoutant que
-    // ce qui n'est *pas encore* arrivé/parti (déjà reflété dans le solde
-    // sinon, sous peine de compter deux fois) : le salaire du mois précédent
-    // s'il n'a pas encore été reversé ce mois-ci, et les factures fixes pas
-    // encore tombées. Sans solde connu (aucun compte avec référence
-    // renseignée), on retombe sur l'ancien calcul (flux du mois), moins
-    // précis mais mieux que rien.
-    let projectedBalance: number;
-    if (currentBalance !== null) {
-      const expectedRemainingExpenses = projectedExpensesMonthEnd - totalExpenses;
-      const expectedRemainingIncome = await this.expectedRemainingSalary(userId, range);
-      projectedBalance = currentBalance + expectedRemainingIncome - expectedRemainingExpenses;
-    } else {
-      projectedBalance = totalIncome - projectedExpensesMonthEnd;
-    }
+    // Avec un solde de compte connu, le solde projeté ne compte aucun revenu
+    // à venir (le salaire de fin de mois sert à vivre le mois suivant, pas à
+    // financer la fin du mois en cours) — seulement le solde actuel moins ce
+    // qu'il reste à dépenser sur les factures fixes pas encore tombées. Sans
+    // solde connu (aucun compte avec référence renseignée), on retombe sur
+    // l'ancien flux (revenus - dépenses projetées), moins précis mais mieux
+    // que rien.
+    const expectedRemainingExpenses = projectedExpensesMonthEnd - totalExpenses;
+    const projectedBalance =
+      currentBalance !== null ? currentBalance - expectedRemainingExpenses : totalIncome - projectedExpensesMonthEnd;
 
     return {
       month: `${range.year}-${String(range.month).padStart(2, '0')}`,
@@ -334,43 +328,6 @@ export class BudgetsService {
     const known = accounts.filter((account) => account.currentBalance !== null);
     if (known.length === 0) return null;
     return known.reduce((sum, account) => sum + (account.currentBalance as number), 0);
-  }
-
-  /**
-   * Salaire pas encore reversé ce mois-ci : contrairement à
-   * `projectedTotalIncome` (qui substitue toujours le salaire du mois
-   * précédent, pour donner une estimation simple du revenu du mois), celui-ci
-   * ne compte le salaire du mois précédent que s'il n'a *pas* d'équivalent ce
-   * mois-ci — indispensable pour ne pas le compter en double avec
-   * `currentBalance`, qui reflète déjà tout salaire déjà arrivé.
-   */
-  private async expectedRemainingSalary(userId: string, range: MonthRange): Promise<number> {
-    const salaryCategoryId = await this.categorization.salaryCategoryId();
-    if (!salaryCategoryId) return 0;
-
-    const previousRange = previousMonthRange(range);
-    const [previousEntries, currentEntries] = await Promise.all([
-      this.incomeEntriesForCategory(userId, previousRange.start, previousRange.end, salaryCategoryId),
-      this.incomeEntriesForCategory(userId, range.start, range.end, salaryCategoryId),
-    ]);
-    return expectedRemainingForFixedExpense(previousEntries, currentEntries);
-  }
-
-  private async incomeEntriesForCategory(
-    userId: string,
-    start: string,
-    end: string,
-    categoryId: string,
-  ): Promise<ExpenseEntry[]> {
-    const rows = await this.transactions
-      .createQueryBuilder('t')
-      .select(['t.label AS label', 't.amount AS amount'])
-      .where('t.userId = :userId', { userId })
-      .andWhere('t.date BETWEEN :start AND :end', { start, end })
-      .andWhere('t.amount > 0')
-      .andWhere('t.categoryId = :categoryId', { categoryId })
-      .getRawMany<{ label: string; amount: string }>();
-    return rows.map((row) => ({ label: row.label, amount: parseFloat(row.amount) }));
   }
 
   private async sumIncomeByCategory(

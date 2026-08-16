@@ -234,8 +234,13 @@ describe('BudgetsService', () => {
       expect(overview.totalIncome).toBe(900);
     });
 
-    it('bases projectedBalance on the real known account balance, adding only what has not happened yet', async () => {
-      categorization.salaryCategoryId.mockResolvedValue('cat-salaire');
+    it('subtracts what is still expected on fixed-expense bills from the real account balance, ignoring future income', async () => {
+      // Le salaire de fin de mois sert à vivre le mois suivant, pas à
+      // financer la fin du mois en cours : le solde projeté ne compte aucun
+      // revenu à venir, seulement le solde réel moins les factures fixes pas
+      // encore tombées.
+      categorization.salaryCategoryId.mockResolvedValue(null);
+      categorization.fixedExpenseCategoryIds.mockResolvedValue(new Set(['cat-loyer']));
       // Un compte avec solde de référence connu (500€), un sans (ignoré).
       accounts.findAllForUser.mockResolvedValue([{ currentBalance: 500 }, { currentBalance: null }]);
 
@@ -244,21 +249,13 @@ describe('BudgetsService', () => {
           const joined = conditions.join(' | ');
           const isPreviousMonth = params.start === '2026-07-01';
 
-          if (joined.includes('t.amount > 0') && joined.includes('!= :categoryId')) {
-            return { total: '0.00' }; // pas d'autre revenu ce mois-ci
-          }
-          if (joined.includes('t.amount > 0') && joined.includes('t.categoryId = :categoryId')) {
-            if (type === 'one') {
-              // sumIncomeByCategory (projectedTotalIncome, non lié au solde)
-              return isPreviousMonth ? { total: '2000.00' } : { total: '0.00' };
-            }
-            // incomeEntriesForCategory (expectedRemainingSalary) : salaire de
-            // juillet, pas encore repassé en août.
-            return isPreviousMonth ? [{ label: 'REVIMA', amount: '2000.00' }] : [];
+          if (joined.includes('t.amount > 0')) {
+            return type === 'one' ? { total: '0.00' } : []; // revenus non pertinents ici
           }
           if (joined.includes('t.amount < 0')) {
-            if (type === 'one') return { total: '-300.00' }; // sumWhere : dépenses du mois
-            return [{ categoryId: 'cat-loisirs', label: 'X', amount: '-300.00' }]; // même montant, aucune catégorie fixe
+            if (type === 'one') return { total: '0.00' }; // rien dépensé ce mois-ci
+            // expenseEntriesByCategory : loyer tombé en juillet, pas encore en août.
+            return isPreviousMonth ? [{ categoryId: 'cat-loyer', label: 'LOYER', amount: '-800.00' }] : [];
           }
           return type === 'one' ? { total: '0' } : [];
         }),
@@ -269,8 +266,8 @@ describe('BudgetsService', () => {
       const overview = await service.overview('u1');
 
       expect(overview.currentBalance).toBe(500);
-      // 500€ actuels + 2000€ de salaire pas encore tombé - 0€ de reste attendu côté dépenses.
-      expect(overview.projectedBalance).toBe(2500);
+      // 500€ actuels - 800€ de loyer pas encore prélevé = déficit prévisible.
+      expect(overview.projectedBalance).toBe(-300);
 
       jest.useRealTimers();
     });
