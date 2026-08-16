@@ -106,8 +106,8 @@ export class BudgetsService {
   async overview(userId: string, month?: string): Promise<MonthOverview> {
     const range = resolveMonthRange(month);
 
-    const [{ total: totalIncome }, { total: totalExpensesRaw }, projection] = await Promise.all([
-      this.sumWhere(userId, range.start, range.end, '>'),
+    const [totalIncome, { total: totalExpensesRaw }, projection] = await Promise.all([
+      this.projectedTotalIncome(userId, range),
       this.sumWhere(userId, range.start, range.end, '<'),
       this.projectExpensesByCategory(userId, range),
     ]);
@@ -276,6 +276,56 @@ export class BudgetsService {
     }
 
     return { perCategory, total };
+  }
+
+  /**
+   * Revenu du mois : le salaire tombe en général en toute fin de mois, donc
+   * au moment de consulter le budget du mois en cours celui-ci n'est
+   * généralement pas encore arrivé — le compter à zéro sous-estimerait
+   * fortement le revenu disponible. On se base plutôt sur le salaire du mois
+   * précédent, systématiquement, qu'un salaire soit ou non déjà tombé ce
+   * mois-ci (pas de logique de "déjà passé ou pas" comme pour les dépenses
+   * fixes — juste le mois précédent, toujours). Les autres revenus
+   * (allocations, remboursements...) restent comptés tels que réellement
+   * perçus ce mois-ci.
+   */
+  private async projectedTotalIncome(userId: string, range: MonthRange): Promise<number> {
+    const salaryCategoryId = await this.categorization.salaryCategoryId();
+    if (!salaryCategoryId) {
+      const { total } = await this.sumWhere(userId, range.start, range.end, '>');
+      return total;
+    }
+
+    const previousRange = previousMonthRange(range);
+    const [otherIncome, previousSalary] = await Promise.all([
+      this.sumIncomeByCategory(userId, range.start, range.end, salaryCategoryId, 'exclude'),
+      this.sumIncomeByCategory(userId, previousRange.start, previousRange.end, salaryCategoryId, 'only'),
+    ]);
+    return otherIncome + previousSalary;
+  }
+
+  private async sumIncomeByCategory(
+    userId: string,
+    start: string,
+    end: string,
+    categoryId: string,
+    filter: 'only' | 'exclude',
+  ): Promise<number> {
+    const qb = this.transactions
+      .createQueryBuilder('t')
+      .select('COALESCE(SUM(t.amount), 0)', 'total')
+      .where('t.userId = :userId', { userId })
+      .andWhere('t.date BETWEEN :start AND :end', { start, end })
+      .andWhere('t.amount > 0');
+
+    if (filter === 'only') {
+      qb.andWhere('t.categoryId = :categoryId', { categoryId });
+    } else {
+      qb.andWhere('(t.categoryId != :categoryId OR t.categoryId IS NULL)', { categoryId });
+    }
+
+    const row = await qb.getRawOne<{ total: string }>();
+    return parseFloat(row?.total ?? '0');
   }
 
   private async sumWhere(

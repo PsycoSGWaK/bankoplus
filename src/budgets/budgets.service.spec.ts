@@ -28,7 +28,7 @@ describe('BudgetsService', () => {
   let service: BudgetsService;
   let budgets: ReturnType<typeof budgetsRepoMock>;
   let transactions: { createQueryBuilder: jest.Mock };
-  let categorization: { assertVisible: jest.Mock; fixedExpenseCategoryIds: jest.Mock };
+  let categorization: { assertVisible: jest.Mock; fixedExpenseCategoryIds: jest.Mock; salaryCategoryId: jest.Mock };
 
   beforeEach(() => {
     budgets = budgetsRepoMock();
@@ -39,6 +39,9 @@ describe('BudgetsService', () => {
       // les tests qui ne portent pas là-dessus au nouveau mécanisme —
       // celui-ci a ses propres tests dédiés ci-dessous.
       fixedExpenseCategoryIds: jest.fn().mockResolvedValue(new Set()),
+      // Par défaut pas de catégorie Salaire trouvée, pour ne pas coupler les
+      // tests qui ne portent pas sur le revenu au nouveau mécanisme.
+      salaryCategoryId: jest.fn().mockResolvedValue(null),
     };
     service = new BudgetsService(budgets as any, transactions as any, categorization as any);
   });
@@ -156,6 +159,75 @@ describe('BudgetsService', () => {
       expect(progress.projectedMonthEnd).toBe(800);
 
       jest.useRealTimers();
+    });
+  });
+
+  describe('overview', () => {
+    // overview() lance plusieurs requêtes en parallèle (Promise.all imbriqués) :
+    // l'ordre d'appel exact de transactions.createQueryBuilder n'est pas
+    // stable/lisible à prédire à la main. On route donc chaque appel selon les
+    // conditions where/andWhere qu'il pose, plutôt que selon son rang d'appel.
+    function trackedQb(responder: (conditions: string[], params: Record<string, unknown>, type: 'one' | 'many') => unknown) {
+      const conditions: string[] = [];
+      const params: Record<string, unknown> = {};
+      const qb: any = {
+        select: jest.fn(() => qb),
+        addSelect: jest.fn(() => qb),
+        where: jest.fn((cond: string, p?: Record<string, unknown>) => {
+          conditions.push(cond);
+          Object.assign(params, p ?? {});
+          return qb;
+        }),
+        andWhere: jest.fn((cond: string, p?: Record<string, unknown>) => {
+          conditions.push(cond);
+          Object.assign(params, p ?? {});
+          return qb;
+        }),
+        groupBy: jest.fn(() => qb),
+        getRawOne: jest.fn(() => Promise.resolve(responder(conditions, params, 'one'))),
+        getRawMany: jest.fn(() => Promise.resolve(responder(conditions, params, 'many'))),
+      };
+      return qb;
+    }
+
+    it("bases this month's income on last month's salary instead of what has already landed this month", async () => {
+      categorization.salaryCategoryId.mockResolvedValue('cat-salaire');
+
+      transactions.createQueryBuilder.mockImplementation(() =>
+        trackedQb((conditions, params, type) => {
+          const joined = conditions.join(' | ');
+          if (joined.includes('t.amount > 0') && joined.includes('!= :categoryId')) {
+            // Autres revenus (hors salaire) du mois courant : une allocation de 200€.
+            return { total: '200.00' };
+          }
+          if (joined.includes('t.amount > 0') && joined.includes('t.categoryId = :categoryId')) {
+            // Salaire : seul le mois précédent (juillet) doit être interrogé pour un montant non nul.
+            return params.start === '2026-07-01' ? { total: '2000.00' } : { total: '0.00' };
+          }
+          if (joined.includes('t.amount < 0')) {
+            return type === 'one' ? { total: '-500.00' } : [];
+          }
+          return type === 'one' ? { total: '0' } : [];
+        }),
+      );
+
+      jest.useFakeTimers().setSystemTime(new Date(2026, 7, 16)); // 16 août 2026
+
+      const overview = await service.overview('u1');
+
+      // 200€ (autres revenus d'août) + 2000€ (salaire de juillet, pas celui d'août).
+      expect(overview.totalIncome).toBe(2200);
+
+      jest.useRealTimers();
+    });
+
+    it('falls back to summing this month\'s income as-is when no Salaire category exists', async () => {
+      categorization.salaryCategoryId.mockResolvedValue(null);
+      transactions.createQueryBuilder.mockReturnValue(qbMock([], { total: '900.00' }));
+
+      const overview = await service.overview('u1');
+
+      expect(overview.totalIncome).toBe(900);
     });
   });
 

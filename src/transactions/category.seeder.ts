@@ -16,6 +16,13 @@ interface DefaultCategory {
   isFixedExpense?: boolean;
 }
 
+// Le salaire tombe en général en toute fin de mois : au moment de consulter
+// le budget du mois en cours, celui du mois en cours n'est souvent pas
+// encore arrivé. Le nom de cette catégorie sert de repère au budget pour
+// baser le revenu projeté sur le salaire du mois précédent plutôt que sur ce
+// qui est déjà tombé ce mois-ci (voir BudgetsService.overview).
+export const SALARY_CATEGORY = 'Salaire';
+
 // Catégories et mots-clés de démarrage — un utilisateur peut ajouter les
 // siens par-dessus (voir CategoriesController). Non exhaustif par design :
 // mieux vaut un utilisateur qui corrige une fois qu'une liste infinie de
@@ -95,7 +102,7 @@ const DEFAULT_EXPENSE_CATEGORIES: DefaultCategory[] = [
 ];
 
 const DEFAULT_INCOME_CATEGORIES: DefaultCategory[] = [
-  { name: 'Salaire', kind: 'income', keywords: ['VIREMENT SALAIRE', 'SALAIRE'] },
+  { name: SALARY_CATEGORY, kind: 'income', keywords: ['VIREMENT SALAIRE', 'SALAIRE'] },
   // Déblocage de prêt (crédit reçu à l'ouverture) : jamais de mot-clé système
   // ici, le libellé de l'organisme prêteur est propre à la banque de chaque
   // utilisateur — à configurer via une règle personnelle (voir CategoryRule
